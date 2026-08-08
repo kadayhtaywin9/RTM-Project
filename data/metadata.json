@@ -1,0 +1,47 @@
+{
+  "priority_townships": [
+    "Hmawbi",
+    "Thanlyin",
+    "Kyauktan"
+  ],
+  "yangon_admin3_count": 45,
+  "priority_admin4_count": 114,
+  "yangon_tower_cell_count": 14873,
+  "yangon_observed_site_count": 8540,
+  "priority_tower_cell_count": 357,
+  "priority_site_count": 270,
+  "earthquake_rows_used": 551,
+  "cyclone_rows_used": 1,
+  "flood_feature_count": 1162,
+  "boundary_valid_on": "2024-02-15",
+  "data_note": "Tower coordinates are cell observations; coordinate deduplication is used as a proxy for physical sites.",
+  "analysis_areas": [
+    "Yangon City",
+    "Hmawbi",
+    "Thanlyin",
+    "Kyauktan"
+  ],
+  "yangon_city_definition": "YCDC area represented by 33 townships in the 2022 Yangon Zoning Regulation",
+  "yangon_city_township_count": 33,
+  "yangon_city_admin4_count": 80,
+  "yangon_city_observed_site_count": 7759,
+  "analysis_admin4_count": 194,
+  "analysis_observed_site_count": 8029,
+  "yangon_city_boundary_source": "Uploaded Yangon admin3/admin4 boundary files; city township membership follows YCDC 2022 zoning regulation.",
+  "population_source": "mmr_ppp_2020_UNadj whole population.tif",
+  "population_reference_year": 2020,
+  "analysis_population_total": 7217907.5,
+  "analysis_area_population_2020": {
+    "Yangon City": 6385122.0,
+    "Hmawbi": 302941.3125,
+    "Thanlyin": 327662.5625,
+    "Kyauktan": 202181.875
+  },
+  "population_grid_points": 312302,
+  "population_nearest_neighbors_precomputed": 10,
+  "flood_tower_intersections": 41,
+  "historical_flood_exposed_population_2020": 312515.6875,
+  "rainfall_rows_yangon": 660,
+  "rainfall_date_min": "2022-01-01",
+  "rainfall_date_max": "2026-07-21"
+}
