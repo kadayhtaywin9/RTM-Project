@@ -1,0 +1,17 @@
+{
+  "candidate_coordinates_tested": 194,
+  "runtime_feature_assessments_ok": 194,
+  "direct_vs_runtime_probability_mean_abs_diff": 0.0,
+  "direct_vs_runtime_probability_max_abs_diff": 0.0,
+  "decision_agreement_at_threshold_0_65": 1.0,
+  "outside_boundary_rejection_test": "passed",
+  "known_positive_test": {
+    "score_pct": 98.97232055664062,
+    "decision": "OPTIMAL CANDIDATE"
+  },
+  "known_negative_test": {
+    "score_pct": 0.07953372551128268,
+    "decision": "NOT OPTIMAL"
+  },
+  "note": "Interactive streamlit-folium map has a coordinate-entry fallback when that optional component is unavailable."
+}

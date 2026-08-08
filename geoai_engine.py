@@ -24,19 +24,22 @@ def recommend_sites(
     population_weight: float = 0.30,
     rural_weight: float = 0.15,
     safety_weight: float = 0.10,
+    elevation_weight: float = 0.15,
 ) -> pd.DataFrame:
     """Rank admin-4 candidate points and greedily enforce site diversity.
 
     This is an interpretable multi-criteria GeoAI suitability model, not a learned ML model.
     """
     df = candidates.copy()
-    weights = np.array([gap_weight, population_weight, rural_weight, safety_weight], dtype=float)
+    weights = np.array([gap_weight, population_weight, rural_weight, safety_weight, elevation_weight], dtype=float)
     weights = weights / max(weights.sum(), 1e-9)
+    elevation = df.get("elevation_score", pd.Series(0.0, index=df.index)).clip(0, 1)
     df["suitability_score"] = 100 * (
         weights[0] * df["gap_score"].clip(0, 1)
         + weights[1] * df.get("population_score", 0).clip(0, 1)
         + weights[2] * df["is_rural"].clip(0, 1)
         + weights[3] * df["safety_score"].clip(0, 1)
+        + weights[4] * elevation
     )
     ranked = df.sort_values(["suitability_score", "nearest_tower_km"], ascending=False)
 

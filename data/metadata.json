@@ -43,5 +43,11 @@
   "historical_flood_exposed_population_2020": 312515.6875,
   "rainfall_rows_yangon": 660,
   "rainfall_date_min": "2022-01-01",
-  "rainfall_date_max": "2026-07-21"
+  "rainfall_date_max": "2026-07-21",
+  "elevation_source": "yangon_elevation.tif",
+  "elevation_crs": "EPSG:4326",
+  "elevation_candidate_min_m": 1.0,
+  "elevation_candidate_max_m": 38.0,
+  "elevation_candidate_median_m": 7.0,
+  "elevation_candidate_count": 194
 }

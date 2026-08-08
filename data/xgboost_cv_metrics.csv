@@ -1,0 +1,5 @@
+fold,train_rows,test_rows,train_positive,test_positive,test_negative,test_groups,accuracy_at_0_5,precision_at_0_5,recall_at_0_5,f1_at_0_5,roc_auc,average_precision
+1,156,38,48,1,37,Hmawbi,0.9736842105263158,0.0,0.0,0.0,1.0,1.0
+2,156,38,47,2,36,Ahlone | Botahtaung | Dagon Myothit (North) | Dagon Myothit (South) | Dala | Kyeemyindaing | Mayangone | Mingalartaungnyunt | Shwepyithar | South Okkalapa | Yankin,1.0,1.0,1.0,1.0,1.0,1.0
+3,120,74,11,38,36,Dagon Myothit (East) | Hlaing | Hlaingtharya (East) | Kyauktan | Lanmadaw | Latha | Mingaladon | North Okkalapa | Pazundaung | Seikgyikanaungto | Tamwe | Thaketa | Thingangyun,0.9459459459459459,0.925,0.9736842105263158,0.9487179487179487,0.9809941520467836,0.9700233784495847
+4,150,44,41,8,36,Bahan | Dagon | Dagon Myothit (Seikkan) | Dawbon | Hlaingtharya (West) | Insein | Kamaryut | Kyauktada | Pabedan | Sanchaung | Thanlyin,0.9545454545454546,0.875,0.875,0.875,0.9878472222222223,0.9502840909090909

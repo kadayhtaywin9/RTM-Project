@@ -1,0 +1,45 @@
+{
+  "model_name": "Yangon Telecom GeoAI XGBoost Site Suitability Prototype",
+  "model_type": "XGBClassifier",
+  "target": "optimal_site",
+  "positive_class": 1,
+  "features_in_order": [
+    "gap_score",
+    "population_score",
+    "is_rural",
+    "safety_score",
+    "elevation_score"
+  ],
+  "spatial_group": "spatial_group",
+  "training_rows": 194,
+  "training_positive": 49,
+  "training_negative": 145,
+  "class_weight_scale_pos_weight": 2.9591836734693877,
+  "provisional_decision_threshold": 0.65,
+  "label_source": [
+    "dashboard_rule_top_quartile_v1"
+  ],
+  "hyperparameters": {
+    "objective": "binary:logistic",
+    "n_estimators": 300,
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "min_child_weight": 2,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
+    "reg_alpha": 0.05,
+    "reg_lambda": 2.0,
+    "tree_method": "hist",
+    "eval_metric": "logloss",
+    "random_state": 42,
+    "n_jobs": 2,
+    "scale_pos_weight": 2.9591836734693877
+  },
+  "limitations": [
+    "The target is a pseudo-label derived from the existing dashboard planning rule.",
+    "The model currently learns to reproduce that rule, not real operator deployment success.",
+    "Positive labels are geographically concentrated, especially in Kyauktan.",
+    "The dataset is small (194 rows), so metrics are prototype evidence only.",
+    "Real operator KPI, RF coverage, land feasibility, power/backhaul and permitting data should replace or augment the current labels/features before operational deployment."
+  ]
+}

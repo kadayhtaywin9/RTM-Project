@@ -1,0 +1,36 @@
+{
+  "input_file": "data/candidate_village_tracts.csv",
+  "output_file": "data/tower_training_data.csv",
+  "rows": 194,
+  "positive_optimal_site": 49,
+  "negative_optimal_site": 145,
+  "positive_rate": 0.25257731958762886,
+  "label_quantile": 0.75,
+  "label_threshold": 45.212326706488,
+  "score_min": 19.194851887126934,
+  "score_max": 76.00828425278708,
+  "score_mean": 42.19777461333627,
+  "spatial_groups": 36,
+  "weights_raw": {
+    "gap_score": 0.45,
+    "population_score": 0.3,
+    "is_rural": 0.15,
+    "safety_score": 0.1,
+    "elevation_score": 0.15
+  },
+  "weights_normalized": {
+    "gap_score": 0.391304347826087,
+    "population_score": 0.2608695652173913,
+    "is_rural": 0.13043478260869565,
+    "safety_score": 0.08695652173913045,
+    "elevation_score": 0.13043478260869565
+  },
+  "model_features_step2": [
+    "gap_score",
+    "population_score",
+    "is_rural",
+    "safety_score",
+    "elevation_score"
+  ],
+  "warning": "optimal_site is a pseudo-label derived from the current dashboard planning rule. It is suitable for an MVP/prototype, not a substitute for operator deployment/KPI ground truth."
+}

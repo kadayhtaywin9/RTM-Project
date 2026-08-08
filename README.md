@@ -10,6 +10,16 @@ This version upgrades the original connectivity-gap dashboard with three new use
 
 The large 343 MB source population GeoTIFF is **not duplicated in this project ZIP**. It has already been preprocessed into compact dashboard files. The included `preprocess_population_disaster.py` can regenerate the derived files from the raw sources.
 
+
+## Clickable map upgrade in this package
+
+This package intentionally keeps the **older Yangon dashboard layout and analysis scope** while adding the newer map interaction style.
+
+- Click an **orange/red Admin-4 gap point** to see the exact nearest observed tower-site proxy, the gap-point and tower coordinates, a line connecting them, network/radio information, and the individual cell rows grouped at that site.
+- Click a **green numbered recommendation** to see the complete recommendation row, exact recommended latitude/longitude, suitability score, current gap, nearest existing tower, and the nearest tower's underlying cell records.
+- The **Tower recommendations** tab includes a CSV download containing the current recommendations, candidate latitude/longitude, nearest-tower ID/coordinates, gap distance, population and suitability inputs.
+- Nearest-tower lookup uses the full **8,540 observed Yangon tower-site proxies**, because a gap point near the edge of Hmawbi/Thanlyin/Kyauktan can legitimately have its nearest observed site in a neighboring Yangon township. The population/disaster simulation remains the original four-area Yangon model.
+
 ## What the dashboard now answers
 
 ### 1. How many people are associated with one tower?
@@ -176,4 +186,36 @@ The following data would be required to estimate real tower users and physical c
 - tower capacity and congestion limits.
 
 The cyclone dataset still contains only one uploaded cyclone record, so cyclone outputs should be treated as experimental/limited.
-# RTM-Project
+
+
+## Elevation-aware tower recommendation
+
+The dashboard now samples `data/yangon_elevation.tif` at every Admin-4 candidate coordinate.
+Each candidate has `elevation_m` and an `elevation_score` normalized from 0 to 1 across the Yangon candidate set.
+Higher elevation increases tower suitability. The default recommendation weights are:
+
+- 40% coverage gap
+- 25% population demand
+- 10% rural priority
+- 10% hazard safety
+- 15% elevation advantage
+
+Elevation is a planning advantage proxy, not a complete RF model. A final site survey should also check slope/access, antenna height, line-of-sight, land availability, power and backhaul.
+
+## XGBoost AI site assessment — Step 3
+
+The trained Step-2 XGBoost model is now deployed in the dashboard.
+
+- The default **Recommendation engine** is `XGBoost AI (trained model)`.
+- The original weighted recommendation logic remains available as
+  `Rule-based baseline`.
+- The new **🤖 AI Site Checker** tab can evaluate an arbitrary map coordinate
+  and return an optimal/not-optimal model decision plus a downloadable report.
+- Existing gap and recommendation markers also show the XGBoost assessment when
+  clicked.
+
+Runtime inference is implemented in `site_ai.py`. Exact coordinate tower gap and
+elevation are combined with containing Admin-4 population/rural/safety features
+to form the same five model inputs used in training.
+
+See `ML_STEP3.md` for the full deployment and validation notes.
