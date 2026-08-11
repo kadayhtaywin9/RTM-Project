@@ -78,7 +78,7 @@ def model_status() -> dict[str, Any]:
     a = _assets()
     meta = a["metadata"]
     return {
-        "model_name": meta.get("model_name", "XGBoost tower-site model"),
+        "model_name": meta.get("model_name", "GeoVision AI tower-site model"),
         "training_rows": int(meta.get("training_rows", 0)),
         "features": list(meta.get("features_in_order", FEATURES)),
         "threshold": float(meta.get("provisional_decision_threshold", 0.65)),
@@ -260,7 +260,7 @@ def recommend_sites_xgb(candidates: pd.DataFrame, n_sites: int = 10, min_spacing
     df["ai_decision"] = np.where(prob >= threshold, "OPTIMAL CANDIDATE", "NOT OPTIMAL")
     # Preserve the existing dashboard column contract: suitability_score is 0..100.
     df["suitability_score"] = 100.0 * prob
-    df["recommendation_engine"] = "XGBoost AI"
+    df["recommendation_engine"] = "GeoVision AI"
     ranked = df.sort_values(["ai_probability", "nearest_tower_km"], ascending=False)
 
     selected = []
@@ -320,7 +320,7 @@ def assess_site(lat: float, lon: float) -> dict[str, Any]:
         "is_optimal": is_optimal,
         "decision": "OPTIMAL CANDIDATE" if is_optimal else "NOT OPTIMAL",
         "explanations": explanations,
-        "model_name": metadata.get("model_name", "XGBoost tower-site model"),
+        "model_name": metadata.get("model_name", "GeoVision AI tower-site model"),
         "model_warning": (
             "Prototype model: trained on pseudo-labels derived from the prior planning rule, not operator-confirmed deployment success."
         ),

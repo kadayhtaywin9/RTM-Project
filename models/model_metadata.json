@@ -1,5 +1,5 @@
 {
-  "model_name": "Yangon Telecom GeoAI XGBoost Site Suitability Prototype",
+  "model_name": "GeoVision AI Site Suitability Prototype",
   "model_type": "XGBClassifier",
   "target": "optimal_site",
   "positive_class": 1,

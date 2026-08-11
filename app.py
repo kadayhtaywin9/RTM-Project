@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -49,7 +51,7 @@ ANALYSIS_AREAS = list(AREA_TOWNSHIPS)
 AREA_ID = {"Yangon City": 1, "Hmawbi": 2, "Thanlyin": 3, "Kyauktan": 4}
 TOWNSHIP_TO_AREA = {t: a for a, towns in AREA_TOWNSHIPS.items() for t in towns}
 
-st.set_page_config(page_title="Yangon GeoAI Telecom Resilience", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Yangon Telecom Planning & Resilience", page_icon="📡", layout="wide")
 
 # Map-only display settings: keep navigation tools available on hover, remove selection
 # mode buttons that clutter the top-right corner, and keep the Plotly logo hidden.
@@ -70,6 +72,12 @@ def load_json(name: str):
 @st.cache_data
 def load_csv(name: str):
     return pd.read_csv(DATA / name)
+
+
+def image_to_base64(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
 @st.cache_resource
@@ -110,6 +118,81 @@ def map_center(df):
     return {"lat": 16.86, "lon": 96.20}
 
 
+def _level(value, low=0.34, high=0.67):
+    """Convert a normalized 0-1 planning score into plain-language bands."""
+    try:
+        value = float(value)
+    except Exception:
+        return "Unknown"
+    if value >= high:
+        return "High"
+    if value >= low:
+        return "Moderate"
+    return "Low"
+
+
+def _recommendation_label(row):
+    """Use decision-support language instead of implying final engineering approval."""
+    decision = str(row.get("ai_decision", "")).upper()
+    if decision == "OPTIMAL CANDIDATE":
+        return "Recommended for field review"
+    try:
+        score = float(row.get("suitability_score", 0))
+    except Exception:
+        score = 0.0
+    if score >= 70:
+        return "Recommended for field review"
+    if score >= 50:
+        return "Consider for further review"
+    return "Lower priority"
+
+
+def _recommendation_reason(row):
+    """Explain a recommendation using the planning factors already present in the model."""
+    reasons = []
+    gap_km = float(row.get("nearest_tower_km", 0) or 0)
+    pop_score = float(row.get("population_score", 0) or 0)
+    hazard = float(row.get("hazard_score", 0) or 0)
+    elevation = float(row.get("elevation_score", 0) or 0)
+
+    if gap_km >= 8:
+        reasons.append(f"it is {gap_km:.1f} km from the nearest mapped tower site")
+    elif gap_km >= 5:
+        reasons.append(f"it has a noticeable {gap_km:.1f} km planning gap to the nearest mapped tower site")
+    else:
+        reasons.append(f"it is {gap_km:.1f} km from the nearest mapped tower site")
+
+    if pop_score >= 0.67:
+        reasons.append("the surrounding population need is high")
+    elif pop_score >= 0.34:
+        reasons.append("the surrounding population need is moderate")
+
+    if hazard <= 0.33:
+        reasons.append("disaster exposure is comparatively low")
+    elif hazard >= 0.67:
+        reasons.append("disaster exposure is high, so resilient design would be important")
+    else:
+        reasons.append("disaster exposure is moderate")
+
+    if elevation >= 0.67:
+        reasons.append("the terrain score is relatively favorable")
+
+    if len(reasons) == 1:
+        return reasons[0].capitalize() + "."
+    return reasons[0].capitalize() + ", " + ", and ".join(reasons[1:]) + "."
+
+
+def _assessment_reason(a):
+    features = a.get("feature_values", {}) if isinstance(a, dict) else {}
+    row = {
+        "nearest_tower_km": a.get("nearest_tower_km", 0),
+        "population_score": features.get("population_score", 0),
+        "hazard_score": 1.0 - float(features.get("safety_score", 0) or 0),
+        "elevation_score": features.get("elevation_score", 0),
+    }
+    return _recommendation_reason(row)
+
+
 def base_map(selected_areas, points_df=None, zoom=8.5):
     selected_townships = expand_areas(selected_areas)
     boundary = filter_geojson(admin3_geo, "adm3_name", selected_townships)
@@ -126,7 +209,7 @@ def base_map(selected_areas, points_df=None, zoom=8.5):
                 marker={"line": {"width": 1.2}},
                 showscale=False,
                 hovertemplate="<b>%{location}</b><extra></extra>",
-                name="Analysis boundary",
+                name="Study area boundary",
             )
         )
     default_points = candidates_all[candidates_all.adm3_name.isin(selected_townships)]
@@ -170,17 +253,17 @@ def add_towers(fig, towers, max_points=2500):
                 draw.estimated_population_nearest,
             ]),
             hovertemplate=(
-                "<b>Tower-site proxy</b><br>Township: %{customdata[0]}"
-                "<br>Radio: %{customdata[1]}<br>Observed cells: %{customdata[2]}"
-                "<br>Estimated nearest-catchment population: %{customdata[3]:,.0f}<extra></extra>"
+                "<b>Existing telecom tower</b><br>Township: %{customdata[0]}"
+                "<br>Technology: %{customdata[1]}<br>Mapped cell records: %{customdata[2]}"
+                "<br>Estimated nearby population: %{customdata[3]:,.0f}<extra></extra>"
             ),
-            name="Observed tower sites",
+            name="Existing telecom towers",
         )
     )
     return fig
 
 
-def add_candidates(fig, df, name="Admin-4 areas"):
+def add_candidates(fig, df, name="Ward / Village Tract areas"):
     if df.empty:
         return fig
     size = 7 + 9 * df.gap_score.clip(0, 1)
@@ -217,11 +300,10 @@ def add_candidates(fig, df, name="Admin-4 areas"):
                 df.population_2020.astype(float),
             )), dtype=object),
             hovertemplate=(
-                "<b>%{customdata[4]}</b><br>%{customdata[3]}"
-                "<br>Nearest observed site: %{customdata[5]:.2f} km"
-                "<br>Rural flag: %{customdata[6]}"
+                "<b>%{customdata[4]}</b><br>Township: %{customdata[3]}"
+                "<br>Nearest existing tower: %{customdata[5]:.2f} km"
                 "<br>Population 2020: %{customdata[7]:,.0f}"
-                "<br><b>Click to inspect the nearest tower cells</b><extra></extra>"
+                "<br><b>Click to see why this area is underserved</b><extra></extra>"
             ),
             name=name,
         )
@@ -254,16 +336,13 @@ def add_recommendations(fig, recs):
                 recs.elevation_score.astype(float),
             )), dtype=object),
             hovertemplate=(
-                "<b>Recommended site #%{customdata[1]}</b><br>%{customdata[5]}, %{customdata[4]}"
-                "<br>Latitude: %{lat:.6f}<br>Longitude: %{lon:.6f}"
-                "<br>Current gap: %{customdata[6]:.2f} km"
-                "<br>Admin-4 population: %{customdata[7]:,.0f}"
-                "<br>Elevation: %{customdata[9]:.0f} m"
-                "<br>Elevation score: %{customdata[10]:.2f}"
-                "<br>Suitability: %{customdata[8]:.1f}/100"
-                "<br><b>Click to inspect this recommendation</b><extra></extra>"
+                "<b>Suggested tower location #%{customdata[1]}</b><br>%{customdata[5]} — %{customdata[4]}"
+                "<br>Nearest existing tower: %{customdata[6]:.2f} km"
+                "<br>Population 2020: %{customdata[7]:,.0f}"
+                "<br>Overall site score: %{customdata[8]:.1f}/100"
+                "<br><b>Click to see the recommendation</b><extra></extra>"
             ),
-            name="Recommended new sites",
+            name="Suggested tower locations",
         )
     )
     return fig
@@ -343,82 +422,90 @@ def _ai_report_text(a):
     return "\n".join(lines)
 
 
-def render_ai_assessment(a, key_prefix="ai"):
-    st.markdown("#### 🤖 XGBoost AI site assessment")
+def render_ai_assessment(a, key_prefix="ai", technical_only=False):
+    if not technical_only:
+        st.markdown("#### Site assessment")
     if not a.get("ok"):
-        st.warning(a.get("reason", "The selected coordinate cannot be evaluated."))
+        st.warning(a.get("reason", "The selected location cannot be evaluated."))
         return
 
     score = float(a["score_100"])
-    threshold_pct = 100.0 * float(a["decision_threshold"])
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("AI suitability", f"{score:.1f}%")
-    c2.metric("AI decision", a["decision"])
-    c3.metric("Nearest tower", f"{float(a['nearest_tower_km']):.2f} km")
-    c4.metric("Elevation", f"{float(a['elevation_m']):.0f} m" if a.get("elevation_m") is not None else "N/A")
+    if not technical_only:
+        label = "Recommended for field review" if a.get("is_optimal") else "Lower priority"
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Overall site score", f"{score:.1f}/100")
+        c2.metric("Recommendation", label)
+        c3.metric("Nearest existing tower", f"{float(a['nearest_tower_km']):.2f} km")
+        c4.metric("Elevation", f"{float(a['elevation_m']):.0f} m" if a.get("elevation_m") is not None else "N/A")
 
-    if a.get("is_optimal"):
-        st.success(
-            f"The trained XGBoost model classifies this point as an **optimal candidate**: "
-            f"{score:.1f}% ≥ the provisional {threshold_pct:.1f}% decision threshold."
+        if a.get("is_optimal"):
+            st.success("This location is a strong planning candidate and should be considered for field review.")
+        else:
+            st.warning("This location is a lower-priority planning candidate compared with stronger alternatives in the study area.")
+
+        st.markdown(f"**Why this result:** {_assessment_reason(a)}")
+        st.write(
+            f"**Township:** {a.get('adm3_name','')}  "
+            f"\n**Ward / Village Tract:** {a.get('adm4_name','')}  "
+            f"\n**Population 2020:** {float(a.get('population_2020',0)):,.0f}  "
+            f"\n**Selected coordinates:** `{float(a['lat']):.6f}, {float(a['lon']):.6f}`"
         )
-    else:
-        st.warning(
-            f"The trained XGBoost model does **not** classify this point as optimal: "
-            f"{score:.1f}% < the provisional {threshold_pct:.1f}% decision threshold."
-        )
-
-    st.write(
-        f"**Selected point:** `{float(a['lat']):.6f}, {float(a['lon']):.6f}`  "
-        f"\n**Administrative area:** {a.get('adm4_name','')} — {a.get('adm3_name','')}  "
-        f"\n**Admin-4 population 2020:** {float(a.get('population_2020',0)):,.0f}  "
-        f"\n**Nearest observed tower-site:** ID {a.get('nearest_tower_id','')} at "
-        f"`{float(a.get('nearest_tower_lat',0)):.6f}, {float(a.get('nearest_tower_lon',0)):.6f}` "
-        f"({a.get('nearest_tower_networks','')} | {a.get('nearest_tower_radios','')})"
-    )
-
-    feature_labels = {
-        "gap_score": "Coverage gap",
-        "population_score": "Population demand",
-        "is_rural": "Rural priority",
-        "safety_score": "Hazard safety",
-        "elevation_score": "Elevation advantage",
-    }
-    rows = []
-    for feature, value in a.get("feature_values", {}).items():
-        rows.append({
-            "Model feature": feature_labels.get(feature, feature),
-            "Normalized value (0–1)": round(float(value), 4),
-            "How it was obtained": a.get("feature_sources", {}).get(feature, ""),
-        })
-    st.markdown("**Inputs sent to XGBoost**")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    expl = pd.DataFrame(a.get("explanations", []))
-    if not expl.empty:
-        expl = expl[["label", "direction", "relative_impact_pct", "value"]].copy()
-        expl.columns = ["Factor", "Effect on prediction", "Relative model impact %", "Input value"]
-        expl["Relative model impact %"] = expl["Relative model impact %"].round(1)
-        expl["Input value"] = expl["Input value"].round(4)
-        st.markdown("**Why the model decided this**")
-        st.dataframe(expl, use_container_width=True, hide_index=True)
         st.caption(
-            "Direction is based on XGBoost margin contributions. Relative impact is the share of absolute contribution magnitude for this prediction; it is not a causal percentage."
+            "Planning recommendation only. A field survey, RF study, land/access check, power/backhaul review and regulatory approval are still required before construction."
         )
 
-    report = _ai_report_text(a)
-    st.download_button(
-        "⬇️ Download AI site assessment report",
-        report.encode("utf-8"),
-        file_name=f"xgboost_site_assessment_{float(a['lat']):.5f}_{float(a['lon']):.5f}.txt",
-        mime="text/plain",
-        key=f"{key_prefix}_download_ai_report",
-    )
-    st.caption(
-        "Prototype limitation: the model was trained on pseudo-labels from the previous planning rule. "
-        "Population/rural/safety are Admin-4-level proxies; tower gap and elevation are evaluated at the selected coordinate. "
-        "Use this for planning screening, not final RF/site engineering approval."
-    )
+    details_context = nullcontext() if technical_only else st.expander("Technical model details", expanded=False)
+    with details_context:
+        threshold_pct = 100.0 * float(a["decision_threshold"])
+        st.caption(
+            f"Model: GeoVision AI • model score {score:.2f}% • decision threshold {threshold_pct:.1f}% • raw decision: {a['decision']}"
+        )
+        st.write(
+            f"**Nearest tower ID:** {a.get('nearest_tower_id','')} at "
+            f"`{float(a.get('nearest_tower_lat',0)):.6f}, {float(a.get('nearest_tower_lon',0)):.6f}` "
+            f"({a.get('nearest_tower_networks','')} | {a.get('nearest_tower_radios','')})"
+        )
+
+        feature_labels = {
+            "gap_score": "Coverage need",
+            "population_score": "Population need",
+            "is_rural": "Rural priority",
+            "safety_score": "Disaster safety",
+            "elevation_score": "Terrain suitability",
+        }
+        rows = []
+        for feature, value in a.get("feature_values", {}).items():
+            rows.append({
+                "Model factor": feature_labels.get(feature, feature),
+                "Normalized value (0–1)": round(float(value), 4),
+                "Data source / calculation": a.get("feature_sources", {}).get(feature, ""),
+            })
+        st.markdown("**Inputs used by the model**")
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        expl = pd.DataFrame(a.get("explanations", []))
+        if not expl.empty:
+            expl = expl[["label", "direction", "relative_impact_pct", "value"]].copy()
+            expl.columns = ["Factor", "Effect on model score", "Relative model impact %", "Input value"]
+            expl["Relative model impact %"] = expl["Relative model impact %"].round(1)
+            expl["Input value"] = expl["Input value"].round(4)
+            st.markdown("**Model explanation**")
+            st.dataframe(expl, use_container_width=True, hide_index=True)
+            st.caption(
+                "Relative model impact describes this model prediction only; it is not a causal percentage."
+            )
+
+        report = _ai_report_text(a)
+        st.download_button(
+            "⬇️ Download technical site assessment report",
+            report.encode("utf-8"),
+            file_name=f"xgboost_site_assessment_{float(a['lat']):.5f}_{float(a['lon']):.5f}.txt",
+            mime="text/plain",
+            key=f"{key_prefix}_download_ai_report",
+        )
+        st.caption(
+            "Prototype limitation: the trained model uses planning proxies and pseudo-labels. Use it for screening and prioritization, not final engineering approval."
+        )
 
 
 def build_ai_click_map(selected_areas, selected_point=None):
@@ -433,14 +520,14 @@ def build_ai_click_map(selected_areas, selected_point=None):
     if boundary.get("features"):
         folium.GeoJson(
             boundary,
-            name="Analysis boundary",
+            name="Study area boundary",
             style_function=lambda _: {
                 "color": "#2457C5", "weight": 2, "fillColor": "#4C78FF", "fillOpacity": 0.06,
             },
         ).add_to(m)
     if selected_point:
         lat, lon = selected_point
-        folium.Marker([lat, lon], tooltip="Selected AI assessment point").add_to(m)
+        folium.Marker([lat, lon], tooltip="Selected location").add_to(m)
     folium.LatLngPopup().add_to(m)
     return m
 
@@ -448,13 +535,13 @@ def build_ai_click_map(selected_areas, selected_point=None):
 def show_nearest_tower_selection(event, candidate_source, key_prefix):
     cd = selected_tagged_point(event, "gap")
     if not cd or len(cd) < 3:
-        st.caption("Click an orange/red gap point to inspect its nearest observed tower and the individual cell records grouped at that site.")
+        st.caption("Select an orange/red area to see its nearest existing tower and the local population context.")
         return False
     try:
         candidate_id = int(float(cd[1]))
         tower_id = int(float(cd[2]))
     except Exception:
-        st.warning("The selected gap point could not be interpreted.")
+        st.warning("The selected underserved area could not be interpreted.")
         return True
 
     crow = candidate_source[candidate_source.candidate_id.astype(int) == candidate_id]
@@ -462,41 +549,42 @@ def show_nearest_tower_selection(event, candidate_source, key_prefix):
         crow = candidates_all[candidates_all.candidate_id.astype(int) == candidate_id]
     tw = tower_sites_lookup_all[tower_sites_lookup_all.yangon_tower_id == tower_id]
     if crow.empty or tw.empty:
-        st.warning("The selected point could not be linked to its nearest observed tower-site proxy.")
+        st.warning("The selected area could not be linked to its nearest mapped tower site.")
         return True
 
     c = crow.iloc[0]
     t = tw.iloc[0]
     cells = tower_cells_lookup_all[tower_cells_lookup_all.yangon_tower_id == tower_id].copy()
 
-    st.markdown("#### Selected gap → nearest tower cells")
+    st.markdown("#### Why this area is underserved")
     a, b, c3, d = st.columns(4)
-    a.metric("Gap distance", f"{float(c['nearest_tower_km']):.2f} km")
-    b.metric("Nearest tower-site ID", f"{tower_id}")
-    c3.metric("Cell records at site", f"{len(cells):,}")
-    d.metric("Admin-4 population", f"{float(c['population_2020']):,.0f}")
+    a.metric("Distance to nearest tower", f"{float(c['nearest_tower_km']):.2f} km")
+    b.metric("Nearest tower ID", f"{tower_id}")
+    c3.metric("Mapped cell records", f"{len(cells):,}")
+    d.metric("Local population 2020", f"{float(c['population_2020']):,.0f}")
     st.write(
-        f"**Gap point:** {c.get('adm4_name', 'Unnamed')} — {c.get('adm3_name', '')}  "
-        f"\n**Gap coordinates:** `{float(c['lat']):.6f}, {float(c['lon']):.6f}`  "
-        f"\n**Nearest tower:** {t.get('adm3_name', '')} at `{float(t['lat']):.6f}, {float(t['lon']):.6f}`  "
+        f"**Ward / Village Tract:** {c.get('adm4_name', 'Unnamed')}  "
+        f"\n**Township:** {c.get('adm3_name', '')}  "
+        f"\n**Area coordinates:** `{float(c['lat']):.6f}, {float(c['lon']):.6f}`  "
+        f"\n**Nearest existing tower:** {t.get('adm3_name', '')} at `{float(t['lat']):.6f}, {float(t['lon']):.6f}`  "
         f"\n**Networks:** {t.get('networks', '')} | **Radios:** {t.get('radios', '')}"
     )
 
     detail = go.Figure()
     detail.add_trace(go.Scattermap(
         lat=[float(c['lat']), float(t['lat'])], lon=[float(c['lon']), float(t['lon'])],
-        mode="lines", line={"width": 3, "color": "#5b6470"}, hoverinfo="skip", name="Gap to nearest tower"
+        mode="lines", line={"width": 3, "color": "#5b6470"}, hoverinfo="skip", name="Area to nearest tower"
     ))
     detail.add_trace(go.Scattermap(
-        lat=[float(c['lat'])], lon=[float(c['lon'])], mode="markers+text", text=["Gap point"], textposition="top center",
+        lat=[float(c['lat'])], lon=[float(c['lon'])], mode="markers+text", text=["Selected area"], textposition="top center",
         marker={"size": 16, "color": "#ef7d00"},
-        hovertemplate=f"<b>{c.get('adm4_name','Gap point')}</b><br>{float(c['lat']):.6f}, {float(c['lon']):.6f}<extra></extra>",
-        name="Selected gap point"
+        hovertemplate=f"<b>{c.get('adm4_name','Selected area')}</b><br>{float(c['lat']):.6f}, {float(c['lon']):.6f}<extra></extra>",
+        name="Selected area"
     ))
     detail.add_trace(go.Scattermap(
         lat=[float(t['lat'])], lon=[float(t['lon'])], mode="markers+text", text=[f"Tower {tower_id}"], textposition="top center",
         marker={"size": 17, "color": "#3157d5"},
-        hovertemplate=f"<b>Tower-site {tower_id}</b><br>{float(t['lat']):.6f}, {float(t['lon']):.6f}<br>{t.get('networks','')} | {t.get('radios','')}<extra></extra>",
+        hovertemplate=f"<b>Existing tower {tower_id}</b><br>{float(t['lat']):.6f}, {float(t['lon']):.6f}<br>{t.get('networks','')} | {t.get('radios','')}<extra></extra>",
         name="Nearest observed tower"
     ))
     mid_lat = (float(c['lat']) + float(t['lat'])) / 2
@@ -518,12 +606,13 @@ def show_nearest_tower_selection(event, candidate_source, key_prefix):
     st.plotly_chart(detail, use_container_width=True, key=f"{key_prefix}_nearest_detail", config=MAP_PLOTLY_CONFIG)
 
     if len(cells):
-        st.markdown("**Individual cell records grouped at this nearest tower-site proxy**")
+        st.markdown("**Technical cell records at the nearest mapped tower**")
         cell_cols = [x for x in ["radio", "Network", "MCC", "MNC", "TAC", "CID", "RANGE", "LAT", "LON"] if x in cells.columns]
         shown = cells[cell_cols].copy().rename(columns={"LAT": "cell_latitude", "LON": "cell_longitude", "RANGE": "reported_range_m"})
         st.dataframe(shown, use_container_width=True, hide_index=True, height=min(360, 70 + 35 * len(shown)))
 
-    render_ai_assessment(assess_site(float(c['lat']), float(c['lon'])), key_prefix=f"{key_prefix}_gap_ai")
+    with st.expander("Model assessment for this gap point", expanded=False):
+        render_ai_assessment(assess_site(float(c['lat']), float(c['lon'])), key_prefix=f"{key_prefix}_gap_ai", technical_only=True)
     return True
 
 
@@ -548,34 +637,67 @@ def show_recommendation_selection(event, recs, key_prefix):
     r = rr.iloc[0]
     tw = tower_sites_lookup_all[tower_sites_lookup_all.yangon_tower_id == tower_id]
 
-    st.markdown("#### Selected recommended site")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Recommendation", f"#{int(r['rank'])}")
-    c2.metric("Suitability", f"{float(r['suitability_score']):.2f}/100")
-    c3.metric("Current tower gap", f"{float(r['nearest_tower_km']):.2f} km")
-    c4.metric("Population 2020", f"{float(r['population_2020']):,.0f}")
-    c5.metric("Elevation", f"{float(r.get('elevation_m', 0)):.0f} m")
+    st.markdown(f"#### Suggested tower location #{int(r['rank'])}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Overall site score", f"{float(r['suitability_score']):.1f}/100")
+    c2.metric("Nearest existing tower", f"{float(r['nearest_tower_km']):.2f} km")
+    c3.metric("Population 2020", f"{float(r['population_2020']):,.0f}")
+    c4.metric("Disaster risk", _level(float(r.get('hazard_score', 0))))
+
+    status_label = _recommendation_label(r)
+    st.success(f"**Recommendation: {status_label}**")
+    st.markdown(f"**Why this location:** {_recommendation_reason(r)}")
+    st.write(
+        f"**Township:** {r.get('adm3_name','')}  "
+        f"\n**Ward / Village Tract:** {r.get('adm4_name','Unnamed')}  "
+        f"\n**Suggested coordinates:** `{float(r['lat']):.6f}, {float(r['lon']):.6f}`"
+    )
+    st.caption(
+        "This is a planning recommendation. Confirm the site with RF, land/access, structural, power, backhaul and regulatory checks before construction."
+    )
 
     detail_cols = [
         "rank", "adm3_name", "adm4_name", "lat", "lon", "population_2020",
         "nearest_tower_id", "nearest_tower_lat", "nearest_tower_lon", "nearest_tower_km",
         "gap_score", "population_score", "is_rural", "elevation_m", "elevation_score",
         "earthquake_score", "cyclone_score", "hazard_score", "safety_score", "suitability_score",
+        "ai_probability", "ai_decision", "recommendation_engine",
     ]
     detail_cols = [x for x in detail_cols if x in rr.columns]
-    detail = rr.iloc[[0]][detail_cols].copy().rename(columns={"lat": "recommended_latitude", "lon": "recommended_longitude"})
-    for col in ["recommended_latitude", "recommended_longitude", "nearest_tower_lat", "nearest_tower_lon"]:
+    detail = rr.iloc[[0]][detail_cols].copy().rename(columns={
+        "rank": "Rank",
+        "adm3_name": "Township",
+        "adm4_name": "Ward / Village Tract",
+        "lat": "Suggested Latitude",
+        "lon": "Suggested Longitude",
+        "population_2020": "Population 2020",
+        "nearest_tower_id": "Nearest Tower ID",
+        "nearest_tower_lat": "Nearest Tower Latitude",
+        "nearest_tower_lon": "Nearest Tower Longitude",
+        "nearest_tower_km": "Nearest Tower Distance (km)",
+        "gap_score": "Coverage Need Score",
+        "population_score": "Population Need Score",
+        "is_rural": "Rural Priority",
+        "elevation_m": "Elevation (m)",
+        "elevation_score": "Terrain Suitability Score",
+        "earthquake_score": "Earthquake Risk Score",
+        "cyclone_score": "Cyclone Risk Score",
+        "hazard_score": "Disaster Risk Score",
+        "safety_score": "Disaster Safety Score",
+        "suitability_score": "Overall Site Score",
+        "ai_probability": "Model Recommendation Probability",
+        "ai_decision": "Model Decision",
+        "recommendation_engine": "Recommendation Method",
+    })
+    for col in ["Suggested Latitude", "Suggested Longitude", "Nearest Tower Latitude", "Nearest Tower Longitude"]:
         if col in detail:
             detail[col] = detail[col].astype(float).round(6)
-    if "nearest_tower_km" in detail:
-        detail["nearest_tower_km"] = detail["nearest_tower_km"].astype(float).round(3)
-    if "suitability_score" in detail:
-        detail["suitability_score"] = detail["suitability_score"].astype(float).round(2)
-    st.dataframe(detail, use_container_width=True, hide_index=True)
-    st.write(
-        f"**Recommended coordinates:** `{float(r['lat']):.6f}, {float(r['lon']):.6f}`  "
-        f"\n**Place:** {r.get('adm4_name','Unnamed')} — {r.get('adm3_name','')}"
-    )
+    if "Nearest Tower Distance (km)" in detail:
+        detail["Nearest Tower Distance (km)"] = detail["Nearest Tower Distance (km)"].astype(float).round(3)
+    if "Overall Site Score" in detail:
+        detail["Overall Site Score"] = detail["Overall Site Score"].astype(float).round(2)
+    with st.expander("Technical recommendation data", expanded=False):
+        st.dataframe(detail, use_container_width=True, hide_index=True)
 
     if not tw.empty:
         t = tw.iloc[0]
@@ -585,10 +707,10 @@ def show_recommendation_selection(event, recs, key_prefix):
             mode="lines", line={"width": 3, "color": "#5b6470"}, hoverinfo="skip", name="Current gap"
         ))
         focus.add_trace(go.Scattermap(
-            lat=[float(r['lat'])], lon=[float(r['lon'])], mode="markers+text", text=[f"Recommendation #{int(r['rank'])}"], textposition="top center",
+            lat=[float(r['lat'])], lon=[float(r['lon'])], mode="markers+text", text=[f"Suggested site #{int(r['rank'])}"], textposition="top center",
             marker={"size": 18, "color": "#00A878"},
-            hovertemplate=f"<b>Recommended site #{int(r['rank'])}</b><br>{float(r['lat']):.6f}, {float(r['lon']):.6f}<extra></extra>",
-            name="Recommended site"
+            hovertemplate=f"<b>Suggested tower location #{int(r['rank'])}</b><br>{float(r['lat']):.6f}, {float(r['lon']):.6f}<extra></extra>",
+            name="Suggested location"
         ))
         focus.add_trace(go.Scattermap(
             lat=[float(t['lat'])], lon=[float(t['lon'])], mode="markers+text", text=[f"Tower {tower_id}"], textposition="top center",
@@ -616,12 +738,13 @@ def show_recommendation_selection(event, recs, key_prefix):
 
         cells = tower_cells_lookup_all[tower_cells_lookup_all.yangon_tower_id == tower_id].copy()
         if len(cells):
-            st.markdown("**Cell records at the nearest existing tower-site proxy**")
+            st.markdown("**Technical cell records at the nearest existing tower**")
             cell_cols = [x for x in ["radio", "Network", "MCC", "MNC", "TAC", "CID", "RANGE", "LAT", "LON"] if x in cells.columns]
             shown = cells[cell_cols].copy().rename(columns={"LAT": "cell_latitude", "LON": "cell_longitude", "RANGE": "reported_range_m"})
             st.dataframe(shown, use_container_width=True, hide_index=True, height=min(330, 70 + 35 * len(shown)))
 
-    render_ai_assessment(assess_site(float(r['lat']), float(r['lon'])), key_prefix=f"{key_prefix}_recommend_ai")
+    with st.expander("Model explanation for this recommendation", expanded=False):
+        render_ai_assessment(assess_site(float(r['lat']), float(r['lon'])), key_prefix=f"{key_prefix}_recommend_ai", technical_only=True)
     return True
 
 
@@ -641,7 +764,7 @@ def show_map_selection(event, candidate_source, recs, key_prefix):
     if tags and tags[-1] == "gap":
         show_nearest_tower_selection(event, candidate_source, key_prefix)
         return
-    st.caption("Click an orange/red gap point to inspect its nearest tower cells, or click a green recommendation marker to inspect the recommendation table.")
+    st.caption("Click an orange/red underserved area to see its nearest tower, or click a green suggested location to see why it is recommended.")
 
 
 def add_flood_layer(fig):
@@ -691,19 +814,19 @@ def area_summary(df, selected_areas, threshold):
         underserved = subset.nearest_tower_km >= threshold
         rows.append({
             "Analysis area": area,
-            "Admin-4 units": int(len(subset)),
+            "Local areas": int(len(subset)),
             "Population 2020": int(round(subset.population_2020.sum())),
-            "Median gap (km)": round(float(subset.nearest_tower_km.median()), 2),
-            "Max gap (km)": round(float(subset.nearest_tower_km.max()), 2),
-            "Underserved units": int(underserved.sum()),
-            "Population in underserved units": int(round(subset.loc[underserved, "population_2020"].sum())),
+            "Median tower distance (km)": round(float(subset.nearest_tower_km.median()), 2),
+            "Largest tower distance (km)": round(float(subset.nearest_tower_km.max()), 2),
+            "Underserved local areas": int(underserved.sum()),
+            "Population in underserved areas": int(round(subset.loc[underserved, "population_2020"].sum())),
         })
     return pd.DataFrame(rows)
 
 
 # ---------- sidebar ----------
-st.sidebar.title("Planning controls")
-st.sidebar.caption("Set the study area and the three assumptions most useful for planning. Technical model controls are kept under Advanced settings.")
+st.sidebar.title("Planning settings")
+st.sidebar.caption("Choose the area and planning assumptions. Keep the defaults for a quick demo.")
 
 study_area = st.sidebar.selectbox(
     "Study area",
@@ -746,10 +869,11 @@ n_sites = st.sidebar.slider(
     help="How many high-priority candidate areas the GeoAI recommendation module should return.",
 )
 recommendation_engine = st.sidebar.selectbox(
-    "Recommendation engine",
-    ["XGBoost AI (trained model)", "Rule-based baseline"],
+    "Recommendation method",
+    ["GeoVision AI (trained model)", "Rule-based baseline"],
     index=0,
-    help="XGBoost uses the saved trained model. Rule-based baseline uses the original weighted planning formula.",
+    format_func=lambda x: "GeoVision AI (recommended)" if x.startswith("GeoVision AI") else "Planning rules (comparison)",
+    help="GeoVision AI is the default recommendation method. The planning-rule option is kept for comparison and validation.",
 )
 
 with st.sidebar.expander("Advanced settings", expanded=False):
@@ -760,9 +884,9 @@ with st.sidebar.expander("Advanced settings", expanded=False):
         format="%.0f km",
         help="Prevents recommended sites from clustering too close together.",
     )
-    if recommendation_engine.startswith("XGBoost"):
-        st.markdown("**XGBoost model**")
-        st.caption("The trained model uses fixed learned tree parameters. No manual scoring weights are applied in XGBoost mode.")
+    if recommendation_engine.startswith("GeoVision AI"):
+        st.markdown("**GeoVision AI**")
+        st.caption("GeoVision AI uses fixed learned tree parameters. No manual scoring weights are applied in GeoVision AI mode.")
     else:
         st.markdown("**Rule-based scoring weights**")
         w_gap = st.slider("Coverage need", 0.0, 1.0, 0.40, 0.05)
@@ -774,14 +898,14 @@ with st.sidebar.expander("Advanced settings", expanded=False):
 st.sidebar.caption(
     f"Active: {', '.join(selected_areas)} • service radius {service_radius_km:.1f} km • "
     f"underserved ≥ {threshold_km:.1f} km • {n_sites} candidate sites • "
-    f"engine: {'XGBoost AI' if recommendation_engine.startswith('XGBoost') else 'rule-based'}"
+    f"method: {'GeoVision AI' if recommendation_engine.startswith('GeoVision AI') else 'planning rules'}"
 )
 
 candidates = candidates_all[candidates_all.adm3_name.isin(selected_townships)].copy()
 towers = tower_sites_all[tower_sites_all.adm3_name.isin(selected_townships)].copy()
 summary = coverage_summary(candidates, threshold_km)
 summary_area = area_summary(candidates, selected_areas, threshold_km)
-if recommendation_engine.startswith("XGBoost"):
+if recommendation_engine.startswith("GeoVision AI"):
     recs = recommend_sites_xgb(candidates, n_sites, min_spacing)
 else:
     recs = recommend_sites(candidates, n_sites, min_spacing, w_gap, w_pop, w_rural, w_safe, w_elev)
@@ -800,21 +924,38 @@ baseline_metrics, baseline_load = simulate_population_coverage(
 )
 
 # ---------- header ----------
-st.title("📡 GeoAI Population, Connectivity & Disaster-Resilient Telecom Dashboard")
+# Branded institutional header matching the approved dashboard style.
+brand_logo_path = BASE / "assets" / "university_logo.jpg"
+brand_logo_b64 = image_to_base64(brand_logo_path)
+
+brand_header_html = f"""<style>
+.brand-banner{{box-sizing:border-box;width:100%;min-height:100px;margin:0 0 1.25rem 0;padding:12px 22px;border:1px solid rgba(75,126,198,.42);border-radius:14px;background:linear-gradient(100deg,#0a1835 0%,#07142d 52%,#061328 100%);box-shadow:inset 0 0 0 1px rgba(255,255,255,.015);display:flex;align-items:center;justify-content:space-between;gap:24px;overflow:hidden}}
+.brand-left{{display:flex;align-items:center;gap:18px;min-width:0;flex:1 1 auto}}
+.brand-logo{{width:74px;height:74px;min-width:74px;border-radius:50%;object-fit:cover;border:2px solid rgba(142,170,255,.72);box-shadow:0 0 0 4px rgba(255,255,255,.035)}}
+.brand-copy{{min-width:0}}
+.brand-university{{margin:0;color:#fff;font-size:1.55rem;line-height:1.12;font-weight:800;letter-spacing:-.015em;white-space:nowrap}}
+.brand-team{{margin:.35rem 0 0 0;color:#f3f6ff;font-size:1.08rem;line-height:1.2;font-weight:500}}
+.brand-network-svg{{width:38%;max-width:540px;min-width:330px;height:76px;flex:0 0 auto}}
+@media(max-width:1050px){{.brand-university{{font-size:1.25rem;white-space:normal}}.brand-network-svg{{width:34%;min-width:240px}}}}
+@media(max-width:760px){{.brand-banner{{padding:14px 16px}}.brand-network-svg{{display:none}}.brand-logo{{width:64px;height:64px;min-width:64px}}.brand-university{{font-size:1.15rem}}.brand-team{{font-size:.95rem}}}}
+</style><div class="brand-banner"><div class="brand-left"><img class="brand-logo" src="data:image/jpeg;base64,{brand_logo_b64}" alt="University of Technology (Yatanarpon Cyber City) logo"><div class="brand-copy"><div class="brand-university">University of Technology (Yatanarpon Cyber City)</div><div class="brand-team">Team GeoVisionaries</div></div></div><svg class="brand-network-svg" viewBox="0 0 540 90" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><defs><filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g fill="none" stroke="#2e77c7" stroke-width="1" opacity=".68"><path d="M15 38 L90 66 L145 49 L220 22 L292 54 L367 29 L438 64 L520 25"/><path d="M90 66 L150 32 L292 54 L345 18 L438 64"/><path d="M145 49 L220 22 L292 54 L367 29 L438 64 L520 25"/><path d="M15 38 L150 32 L220 22"/></g><g fill="#5aa9ff" filter="url(#glow)"><circle cx="15" cy="38" r="3"/><circle cx="90" cy="66" r="3"/><circle cx="145" cy="49" r="3"/><circle cx="150" cy="32" r="3"/><circle cx="220" cy="22" r="3"/><circle cx="292" cy="54" r="3"/><circle cx="345" cy="18" r="3"/><circle cx="367" cy="29" r="3"/><circle cx="438" cy="64" r="3"/><circle cx="520" cy="25" r="3"/></g></svg></div>"""
+
+st.markdown(brand_header_html, unsafe_allow_html=True)
+
+st.title("📡 Yangon Telecom Coverage & Resilience Planner")
 st.caption(
-    "Yangon City + Hmawbi + Thanlyin + Kyauktan • population demand + tower load + flood/rainfall + disaster coverage simulation"
+    "Find underserved communities, review suggested tower locations, and test how disasters could affect telecom access."
 )
 st.info(
-    "Population per tower is an **estimated geographic service population**, not a subscriber count. "
-    "WorldPop pixels are assigned to their nearest observed tower-site proxy; the planning service radius controls whether a pixel is counted as covered."
+    "This is a planning tool, not a live network monitor. Population and tower coverage are estimated from geographic data and should be confirmed with field and RF engineering checks."
 )
 
 k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("Population 2020", f"{baseline_metrics.get('population_total', 0):,.0f}")
-k2.metric("Observed tower-site proxies", f"{len(towers):,}")
-k3.metric("Baseline covered population", f"{baseline_metrics.get('baseline_served', 0):,.0f}", f"{baseline_metrics.get('baseline_coverage_pct', 0):.1f}%")
-k4.metric("Baseline uncovered", f"{baseline_metrics.get('baseline_uncovered', 0):,.0f}", f"> {service_radius_km:.1f} km")
-k5.metric("Underserved Admin-4 units", f"{int((candidates.nearest_tower_km >= threshold_km).sum()):,}")
+k2.metric("Mapped tower sites", f"{len(towers):,}")
+k3.metric("Population within planning range", f"{baseline_metrics.get('baseline_served', 0):,.0f}", f"{baseline_metrics.get('baseline_coverage_pct', 0):.1f}%")
+k4.metric("Population outside planning range", f"{baseline_metrics.get('baseline_uncovered', 0):,.0f}", f"> {service_radius_km:.1f} km")
+k5.metric("Underserved local areas", f"{int((candidates.nearest_tower_km >= threshold_km).sum()):,}")
 
 # ---------- tabs ----------
 t_overview, t_population, t_gap, t_recommend, t_ai, t_disaster, t_rain, t_method = st.tabs(
@@ -822,35 +963,34 @@ t_overview, t_population, t_gap, t_recommend, t_ai, t_disaster, t_rain, t_method
         "Overview",
         "Population & tower load",
         "Underserved areas",
-        "Tower recommendations",
-        "🤖 AI Site Checker",
-        "Disaster coverage",
+        "Suggested tower locations",
+        "AI Site Checker",
+        "Disaster impact",
         "Rainfall & flood",
-        "Data & method",
+        "Technical details",
     ]
 )
 
 with t_overview:
-    st.subheader("Regional network picture")
+    st.subheader("Where are the current coverage gaps?")
     fig = base_map(selected_areas, towers, zoom=8.45 if len(selected_areas) > 1 else 9.1)
     add_towers(fig, towers)
-    add_candidates(fig, candidates, "Admin-4 gap points")
+    add_candidates(fig, candidates, "Underserved local areas")
     add_recommendations(fig, recs)
-    st.caption("Tip: click an orange/red Admin-4 gap point to inspect its nearest tower and cells. Green numbered recommendation markers are also clickable.")
+    st.caption("Orange/red points show local areas farther from existing towers. Green numbered points show suggested locations for further field review.")
     overview_event = st.plotly_chart(fig, use_container_width=True, key="overview_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
     overview_detail = st.container()
     with overview_detail:
         show_map_selection(overview_event, candidates, recs, "overview")
 
-    st.markdown("#### Analysis-area gap + population summary")
+    st.markdown("#### Coverage need by area")
     st.dataframe(summary_area, use_container_width=True, hide_index=True)
 
 with t_population:
-    st.subheader("How many people are associated with each observed tower site?")
+    st.subheader("Where could existing tower sites be carrying the most population demand?")
     st.write(
-        "Each WorldPop 2020 raster pixel is assigned to its nearest observed tower-site proxy. "
-        "This creates a Voronoi-like geographic catchment and gives an estimated population load. "
-        "It does not tell us actual SIM subscribers, traffic, handovers or sector utilization."
+        "The map estimates how much nearby population is associated with each mapped tower location. "
+        "Use it to spot areas where infrastructure may be carrying more geographic demand. It is not a count of real subscribers or network traffic."
     )
 
     p_rows = []
@@ -861,11 +1001,11 @@ with t_population:
         p_rows.append({
             "Area": area,
             "Population 2020": int(round(pop_total)),
-            "Tower-site proxies": int(len(area_towers)),
-            "Population / site": int(round(pop_total / max(len(area_towers), 1))),
-            "Median nearest-catchment population": int(round(area_towers.estimated_population_nearest.median())),
-            "Max nearest-catchment population": int(round(area_towers.estimated_population_nearest.max())),
-            "Sites inside historic flood footprint": int((area_towers.flood_frequency > 0).sum()),
+            "Mapped tower sites": int(len(area_towers)),
+            "Average population / site": int(round(pop_total / max(len(area_towers), 1))),
+            "Median estimated nearby population": int(round(area_towers.estimated_population_nearest.median())),
+            "Highest estimated nearby population": int(round(area_towers.estimated_population_nearest.max())),
+            "Tower sites in historic flood areas": int((area_towers.flood_frequency > 0).sum()),
         })
     st.dataframe(pd.DataFrame(p_rows), use_container_width=True, hide_index=True)
 
@@ -906,18 +1046,18 @@ with t_population:
                 ]),
                 hovertemplate=(
                     "<b>Site %{customdata[0]}</b><br>%{customdata[1]}"
-                    "<br>Radio: %{customdata[2]} | cells: %{customdata[3]}"
-                    "<br>Nearest-catchment population: %{customdata[4]:,.0f}"
-                    "<br>Primary population within 5 km: %{customdata[5]:,.0f}"
+                    "<br>Technology: %{customdata[2]} | mapped cells: %{customdata[3]}"
+                    "<br>Estimated nearby population: %{customdata[4]:,.0f}"
+                    "<br>Population within 5 km: %{customdata[5]:,.0f}"
                     "<br>Historic flood frequency: %{customdata[6]:.0f}<extra></extra>"
                 ),
-                name="Estimated tower population load",
+                name="Estimated population near tower",
             )
         )
         st.plotly_chart(fig, use_container_width=True, config=MAP_PLOTLY_CONFIG)
 
     with c2:
-        st.markdown("**Highest estimated population loads**")
+        st.markdown("**Tower sites with the highest estimated nearby population**")
         top = towers.nlargest(25, "estimated_population_primary_5km")[[
             "tower_id", "analysis_area", "adm3_name", "radios", "cell_count",
             "estimated_population_primary_5km", "estimated_population_nearest", "flood_frequency",
@@ -925,17 +1065,17 @@ with t_population:
         top["estimated_population_primary_5km"] = top.estimated_population_primary_5km.round(0).astype(int)
         top["estimated_population_nearest"] = top.estimated_population_nearest.round(0).astype(int)
         top.columns = [
-            "Site ID", "Area", "Township", "Radio", "Cells", "Primary pop ≤5 km",
-            "Nearest-catchment pop", "Flood freq",
+            "Site ID", "Area", "Township", "Technology", "Mapped cells", "Population within 5 km",
+            "Estimated nearby population", "Historic flood frequency",
         ]
         st.dataframe(top, use_container_width=True, hide_index=True, height=520)
 
     st.caption(
-        "Use 'Primary pop ≤5 km' for a conservative planning-load view. 'Nearest-catchment pop' assigns every person to the nearest observed site even when farther than 5 km, so it highlights infrastructure scarcity but is not a signal-coverage estimate."
+        "The 5 km population is the easier planning measure to compare. The broader nearby-population estimate assigns each person to the nearest mapped site even when farther away, so it highlights infrastructure scarcity rather than actual signal coverage."
     )
 
 with t_gap:
-    st.subheader("Identify underserved areas and underserved population")
+    st.subheader("Which communities are farthest from existing towers?")
     underserved = candidates[candidates.nearest_tower_km >= threshold_km].sort_values(
         ["population_2020", "nearest_tower_km"], ascending=False
     )
@@ -944,14 +1084,14 @@ with t_gap:
     with c1:
         fig = base_map(selected_areas, underserved if len(underserved) else candidates, zoom=8.6 if len(selected_areas) > 1 else 9.2)
         gap_source = underserved if len(underserved) else candidates
-        add_candidates(fig, gap_source, "Underserved admin-4 units")
-        st.caption("Click an orange/red gap point to display the exact nearest observed tower-site proxy and its underlying cell records.")
+        add_candidates(fig, gap_source, "Underserved local areas")
+        st.caption("Click an orange/red area to see the nearest existing tower and the reason it is flagged as underserved.")
         under_event = st.plotly_chart(fig, use_container_width=True, key="underserved_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
         under_detail = st.container()
         with under_detail:
             show_nearest_tower_selection(under_event, gap_source, "underserved")
     with c2:
-        st.metric("Population in underserved Admin-4 units", f"{underserved.population_2020.sum():,.0f}")
+        st.metric("Population in underserved local areas", f"{underserved.population_2020.sum():,.0f}")
         top = underserved[[
             "analysis_area", "adm3_name", "adm4_name", "population_2020", "nearest_tower_km",
             "nearest_tower_id", "nearest_tower_lat", "nearest_tower_lon", "hazard_score"
@@ -962,39 +1102,62 @@ with t_gap:
             top["nearest_tower_lat"] = top.nearest_tower_lat.round(6)
             top["nearest_tower_lon"] = top.nearest_tower_lon.round(6)
             top["hazard_score"] = (100 * top.hazard_score).round(0).astype(int)
-        top.columns = ["Area", "Township", "Admin-4", "Population 2020", "Nearest site km", "Tower ID", "Tower latitude", "Tower longitude", "Hazard /100"]
+        top.columns = ["Area", "Township", "Ward / Village Tract", "Population 2020", "Nearest tower (km)", "Tower ID", "Tower latitude", "Tower longitude", "Disaster risk /100"]
         st.dataframe(top, use_container_width=True, hide_index=True, height=490)
 
     st.info(
-        "This improves the old 'distance only' view: a 10 km gap with 20,000 people can now be distinguished from a 10 km gap with 500 people."
+        "Distance alone does not tell the full story. Use population together with tower distance to identify where infrastructure investment could benefit more people."
     )
 
 with t_recommend:
-    st.subheader("Population-aware GeoAI tower recommendations")
-    if recommendation_engine.startswith("XGBoost"):
-        st.write(
-            "Candidate areas are ranked by the trained XGBoost model using coverage gap, population demand, rural priority, hazard safety and terrain elevation. "
-            "The model probability becomes the 0–100 suitability score, then the minimum-spacing rule prevents recommendations from clustering together."
-        )
-        st.caption("Recommendation engine: trained `models/tower_site_xgb.json` XGBClassifier.")
-    else:
-        st.write(
-            "Candidate areas are ranked using the original weighted rule: coverage gap, population demand, rural priority, hazard safety and terrain elevation. "
-            "Higher sampled elevation receives more suitability priority, then a minimum-spacing rule prevents recommendations from clustering together."
-        )
-        st.caption("Recommendation engine: rule-based baseline. Use the sidebar selector to switch to XGBoost AI.")
+    st.subheader("Where should new tower sites be investigated first?")
+    st.write(
+        "Green points are high-priority **planning candidates** based on tower distance, population need, disaster exposure and terrain. "
+        "Select a point to see the reason for the recommendation and the next action."
+    )
+    with st.expander("How these suggestions are calculated", expanded=False):
+        if recommendation_engine.startswith("GeoVision AI"):
+            st.write(
+                "GeoVision AI ranks candidate areas using coverage need, population need, rural priority, disaster safety and terrain suitability. "
+                "A spacing rule then prevents suggested sites from clustering too closely."
+            )
+            st.caption("Technical GeoVision AI model file: `models/tower_site_xgb.json`.")
+        else:
+            st.write(
+                "The comparison method uses weighted planning rules for coverage need, population need, rural priority, disaster safety and terrain suitability. "
+                "A spacing rule then prevents suggested sites from clustering too closely."
+            )
 
     fig = base_map(selected_areas, recs, zoom=8.6 if len(selected_areas) > 1 else 9.2)
     add_towers(fig, towers, max_points=1600)
     add_recommendations(fig, recs)
-    st.caption("Click a green numbered recommendation marker to display its complete recommendation row, exact coordinates, nearest existing tower, and tower cell records.")
+    st.caption("Select a green numbered location to see why it is recommended and what should be checked next.")
     rec_event = st.plotly_chart(fig, use_container_width=True, key="recommendation_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
     rec_detail = st.container()
     with rec_detail:
         if not show_recommendation_selection(rec_event, recs, "recommendation"):
-            st.caption("No recommendation selected yet. Click a green numbered point on the map.")
+            st.caption("Select a green location to see why a new tower is recommended there.")
 
     recs_display = add_area_label(recs)
+
+    # Simple decision table for normal users. Raw model fields remain available below.
+    simple = recs_display.copy()
+    simple["Population Need"] = simple["population_score"].apply(_level)
+    simple["Disaster Risk"] = simple["hazard_score"].apply(_level)
+    simple["Recommendation"] = simple.apply(_recommendation_label, axis=1)
+    simple["Nearest Tower (km)"] = simple["nearest_tower_km"].astype(float).round(1)
+    simple["Overall Site Score"] = simple["suitability_score"].astype(float).round(1)
+    simple = simple[[
+        "rank", "adm3_name", "adm4_name", "Nearest Tower (km)",
+        "Population Need", "Disaster Risk", "Overall Site Score", "Recommendation"
+    ]].rename(columns={
+        "rank": "Rank",
+        "adm3_name": "Township",
+        "adm4_name": "Ward / Village Tract",
+    })
+    st.markdown("#### Priority list")
+    st.dataframe(simple, use_container_width=True, hide_index=True)
+
     export_cols = [
         "rank", "analysis_area", "adm3_name", "adm4_name", "lat", "lon", "population_2020",
         "nearest_tower_id", "nearest_tower_lat", "nearest_tower_lon", "nearest_tower_km",
@@ -1003,47 +1166,51 @@ with t_recommend:
     for optional_col in ["ai_probability", "ai_decision", "recommendation_engine"]:
         if optional_col in recs_display.columns:
             export_cols.append(optional_col)
-    table = recs_display[export_cols].copy()
-    table = table.rename(columns={"lat": "latitude", "lon": "longitude"})
-    if "ai_probability" in table:
-        table["ai_probability"] = (100 * table["ai_probability"].astype(float)).round(2)
-        table = table.rename(columns={"ai_probability": "xgboost_probability_pct"})
+    technical_table = recs_display[export_cols].copy()
+    technical_table = technical_table.rename(columns={"lat": "latitude", "lon": "longitude"})
+    if "ai_probability" in technical_table:
+        technical_table["ai_probability"] = (100 * technical_table["ai_probability"].astype(float)).round(2)
+        technical_table = technical_table.rename(columns={"ai_probability": "model_recommendation_score_pct"})
     for c in ["latitude", "longitude", "nearest_tower_lat", "nearest_tower_lon"]:
-        table[c] = table[c].astype(float).round(6)
+        technical_table[c] = technical_table[c].astype(float).round(6)
     for c in ["nearest_tower_km", "gap_score", "population_score", "elevation_score", "hazard_score", "safety_score"]:
-        table[c] = table[c].astype(float).round(4)
-    if "elevation_m" in table:
-        table["elevation_m"] = table["elevation_m"].astype(float).round(1)
-    table["suitability_score"] = table.suitability_score.astype(float).round(2)
-    table["population_2020"] = table.population_2020.round(0).astype(int)
-    st.dataframe(table, use_container_width=True, hide_index=True)
+        technical_table[c] = technical_table[c].astype(float).round(4)
+    if "elevation_m" in technical_table:
+        technical_table["elevation_m"] = technical_table["elevation_m"].astype(float).round(1)
+    technical_table["suitability_score"] = technical_table.suitability_score.astype(float).round(2)
+    technical_table["population_2020"] = technical_table.population_2020.round(0).astype(int)
+
+    with st.expander("Technical recommendation table", expanded=False):
+        st.caption("Raw coordinates and model factors are kept here for analysts, engineers and judges who want to inspect the calculation.")
+        st.dataframe(technical_table, use_container_width=True, hide_index=True)
+
     st.download_button(
-        "⬇️ Download recommended places with latitude/longitude (CSV)",
-        table.to_csv(index=False).encode("utf-8-sig"),
-        file_name="yangon_geoai_recommended_places_coordinates.csv",
+        "⬇️ Download suggested locations with coordinates (CSV)",
+        technical_table.to_csv(index=False).encode("utf-8-sig"),
+        file_name="yangon_suggested_tower_locations.csv",
         mime="text/csv",
     )
-    st.caption("Latitude/longitude are candidate-zone coordinates for field and engineering investigation, not final approved construction coordinates.")
+    st.caption("Suggested coordinates are for field investigation only; they are not final approved construction coordinates.")
 
 with t_ai:
-    st.subheader("🤖 XGBoost AI Tower Site Checker")
+    st.subheader("Check a proposed tower location")
     status = model_status()
     st.write(
-        "Click a coordinate inside the project boundary. The dashboard builds the same five features used during training, "
-        "runs the saved `tower_site_xgb.json` model, and returns an optimal/not-optimal decision with a downloadable report."
+        "Click anywhere inside the study area to check whether that location is a strong candidate for further tower planning. "
+        "The result explains the main reasons in plain language."
     )
-    st.info(
-        f"Loaded trained XGBClassifier • {status['training_rows']} training rows • "
-        f"{len(status['features'])} model features • provisional optimal threshold {100*status['threshold']:.0f}%. "
-        "The legacy recommendation-weight sliders do not change this trained model."
-    )
+    with st.expander("About the model", expanded=False):
+        st.info(
+            f"GeoVision AI • {status['training_rows']} training rows • "
+            f"{len(status['features'])} model factors • decision threshold {100*status['threshold']:.0f}%."
+        )
 
     previous = st.session_state.get("ai_site_checker_point")
     clicked_point = None
 
     if HAS_CLICK_MAP:
         m = build_ai_click_map(selected_areas, previous)
-        st.caption("Click anywhere inside the blue analysis boundary. The latitude/longitude popup is also shown on the map.")
+        st.caption("Click anywhere inside the blue study boundary. You can also enter an exact coordinate below.")
         click_state = st_folium(
             m,
             width=1100,
@@ -1074,21 +1241,20 @@ with t_ai:
         with x3:
             st.write("")
             st.write("")
-            if st.button("Assess coordinate", type="primary", key="ai_manual_assess"):
+            if st.button("Check location", type="primary", key="ai_manual_assess"):
                 clicked_point = (float(manual_lat), float(manual_lon))
                 st.session_state["ai_site_checker_point"] = clicked_point
 
     if clicked_point:
         render_ai_assessment(assess_site(clicked_point[0], clicked_point[1]), key_prefix="ai_checker")
     else:
-        st.caption("No point selected yet. Click the map or enter a coordinate to run the trained XGBoost model.")
+        st.caption("No location selected yet. Click the map or enter a coordinate to check a proposed site.")
 
 
 with t_disaster:
-    st.subheader("How a disaster changes population coverage")
+    st.subheader("What happens to telecom access during a disaster?")
     st.write(
-        "The simulator first estimates site risk, assumes sites above your risk threshold are unavailable, then reassigns population pixels to the nearest surviving alternative among the 10 precomputed nearest sites. "
-        "People are counted as losing coverage when no surviving alternative is within the planning service radius."
+        "Choose a disaster scenario and severity. The simulator estimates which tower sites may become unavailable and how many people could still reach another nearby site within the planning radius."
     )
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1100,7 +1266,7 @@ with t_disaster:
     with c3:
         rain_date = st.selectbox("Rainfall snapshot", rain_dates, index=len(rain_dates) - 1)
     with c4:
-        risk_threshold = st.slider("Assume site unavailable at risk ≥", 0.30, 0.90, 0.60, 0.05)
+        risk_threshold = st.slider("Site failure sensitivity", 0.30, 0.90, 0.60, 0.05)
 
     risk_all = attach_rainfall_to_towers(tower_sites_all, rainfall, rain_date)
     risk_all = outage_risk(risk_all, scenario, severity)
@@ -1115,12 +1281,12 @@ with t_disaster:
     risk = risk_all[risk_all.analysis_area.isin(selected_areas)].sort_values("scenario_risk", ascending=False)
 
     a, b, c, d, e = st.columns(5)
-    a.metric("Assumed unavailable sites", f"{metrics.get('selected_failed_towers', 0):,}")
-    b.metric("Primary population affected", f"{metrics.get('population_directly_affected', 0):,.0f}")
-    c.metric("Population rerouted", f"{metrics.get('population_rerouted', 0):,.0f}")
-    d.metric("Population losing coverage", f"{metrics.get('population_losing_coverage', 0):,.0f}")
+    a.metric("Sites estimated unavailable", f"{metrics.get('selected_failed_towers', 0):,}")
+    b.metric("People initially affected", f"{metrics.get('population_directly_affected', 0):,.0f}")
+    c.metric("People served by another site", f"{metrics.get('population_rerouted', 0):,.0f}")
+    d.metric("People potentially losing access", f"{metrics.get('population_losing_coverage', 0):,.0f}")
     e.metric(
-        "Coverage after disaster",
+        "Planning coverage after disaster",
         f"{metrics.get('post_coverage_pct', 0):.1f}%",
         f"{metrics.get('post_coverage_pct', 0)-metrics.get('baseline_coverage_pct', 0):+.1f} pp",
     )
@@ -1183,6 +1349,16 @@ with t_disaster:
         risk_table["scenario_risk"] = (100 * risk_table.scenario_risk).round(1)
         for col in ["baseline_people_within_radius", "post_disaster_people_within_radius"]:
             risk_table[col] = risk_table[col].round(0).astype(int)
+        risk_table = risk_table.rename(columns={
+            "tower_id": "Tower ID",
+            "analysis_area": "Analysis Area",
+            "adm3_name": "Township",
+            "scenario_risk": "Scenario Risk (%)",
+            "failed_in_scenario": "Out of Service",
+            "baseline_people_within_radius": "Population Served Before",
+            "post_disaster_people_within_radius": "Population Load After Disaster",
+            "flood_frequency": "Historic Flood Frequency",
+        })
         st.dataframe(risk_table, use_container_width=True, hide_index=True, height=460)
     with c2:
         st.markdown("**Surviving sites absorbing the largest extra population load**")
@@ -1195,6 +1371,16 @@ with t_disaster:
         for col in ["baseline_people_within_radius", "post_disaster_people_within_radius", "load_change_people"]:
             gain[col] = gain[col].round(0).astype(int)
         gain["load_ratio"] = gain.load_ratio.replace([np.inf, -np.inf], np.nan).round(2)
+        gain = gain.rename(columns={
+            "tower_id": "Tower ID",
+            "analysis_area": "Analysis Area",
+            "adm3_name": "Township",
+            "radios": "Technology",
+            "baseline_people_within_radius": "Population Served Before",
+            "post_disaster_people_within_radius": "Population Load After Disaster",
+            "load_change_people": "Extra Population Load",
+            "load_ratio": "Load Increase Ratio",
+        })
         st.dataframe(gain, use_container_width=True, hide_index=True, height=460)
 
     st.warning(
@@ -1228,6 +1414,19 @@ with t_rain:
         "adm2_name", "date", "rfh", "rfh_avg", "rfq", "r1h", "r1h_avg", "r1q", "r1h_percentile", "r3h", "r3q"
     ]].copy()
     latest["r1h_percentile"] = (100 * latest.r1h_percentile).round(0).astype(int)
+    latest = latest.rename(columns={
+        "adm2_name": "Yangon Subregion",
+        "date": "Date",
+        "rfh": "10-day Rainfall (mm)",
+        "rfh_avg": "10-day Long-term Avg (mm)",
+        "rfq": "10-day Anomaly (%)",
+        "r1h": "1-month Rainfall (mm)",
+        "r1h_avg": "1-month Long-term Avg (mm)",
+        "r1q": "1-month Anomaly (%)",
+        "r1h_percentile": "1-month Rainfall Percentile",
+        "r3h": "3-month Rainfall (mm)",
+        "r3q": "3-month Anomaly (%)",
+    })
     st.markdown(f"**Latest supplied rainfall snapshot: {latest_date.date()}**")
     st.dataframe(latest, use_container_width=True, hide_index=True)
 
@@ -1269,7 +1468,7 @@ with t_rain:
 with t_method:
     st.subheader("Data inventory and methodology")
     st.markdown(
-        "**XGBoost site model:** the deployed `models/tower_site_xgb.json` classifier uses coverage gap, population demand, rural priority, hazard safety and elevation advantage. "
+        "**GeoVision AI site model:** the deployed `models/tower_site_xgb.json` classifier uses coverage gap, population demand, rural priority, hazard safety and elevation advantage. "
         "For arbitrary map clicks, tower gap and elevation are evaluated at the exact coordinate; population, rural classification and hazard safety come from the containing Admin-4 area. "
         "The current training target is a pseudo-label from the prior planning rule, so the model is an MVP screening model rather than operator-validated deployment intelligence."
     )
@@ -1319,3 +1518,8 @@ with t_method:
         "Estimated population per site is NOT the number of real customers connected to that tower. Actual users require operator subscriber/traffic data. "
         "Likewise, the planning radius is NOT RF propagation. A production model should add antenna frequency, height, azimuth, transmit power, terrain/DEM, buildings, handover/traffic logs, backup power and tower outage history."
     )
+
+# ---------- footer ----------
+st.markdown("---")
+st.caption("Developed by Team GeoVisionaries, University of Technology (Yatanarpon Cyber City).")
+

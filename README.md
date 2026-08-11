@@ -2,6 +2,8 @@
 
 Analysis areas: **Yangon City (33 YCDC townships), Hmawbi, Thanlyin and Kyauktan**.
 
+> **Improved user-facing version:** this package keeps the same data/model logic while simplifying the dashboard language, recommendation table, map labels and Site Checker. See `UX_IMPROVEMENTS.md` for the change summary.
+
 This version upgrades the original connectivity-gap dashboard with three new user datasets:
 
 1. `mmr_ppp_2020_UNadj whole population.tif` — WorldPop 2020 population raster.
