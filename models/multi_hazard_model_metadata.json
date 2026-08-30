@@ -1,0 +1,199 @@
+{
+  "system_name": "GeoVision Disaster Impact AI \u2014 Multi-Hazard Model 2",
+  "hazards": {
+    "earthquake": {
+      "name": "GeoVision Earthquake Impact AI",
+      "model_file": "hazard_earthquake_xgb.json",
+      "features_in_order": [
+        "earthquake_history_score",
+        "event_intensity",
+        "isolation_score",
+        "radio_vulnerability",
+        "site_redundancy_risk"
+      ],
+      "training_rows": 48174,
+      "training_towers": 8029,
+      "synthetic_event_intensity_levels": [
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+      ],
+      "cv_summary": {
+        "folds": [
+          {
+            "fold": 1,
+            "mae": 0.0020424214232673188,
+            "rmse": 0.003040293290553501,
+            "r2": 0.9995834614936975
+          },
+          {
+            "fold": 2,
+            "mae": 0.002181597426060781,
+            "rmse": 0.003342326568710831,
+            "r2": 0.9994964168707134
+          },
+          {
+            "fold": 3,
+            "mae": 0.002173647228619336,
+            "rmse": 0.0032835982440802933,
+            "r2": 0.999510950793995
+          }
+        ],
+        "mae_mean": 0.002132555359315812,
+        "rmse_mean": 0.0032220727011148752,
+        "r2_mean": 0.9995302763861353
+      },
+      "hyperparameters": {
+        "objective": "reg:squarederror",
+        "n_estimators": 220,
+        "learning_rate": 0.055,
+        "max_depth": 4,
+        "min_child_weight": 3,
+        "subsample": 0.86,
+        "colsample_bytree": 0.9,
+        "reg_alpha": 0.03,
+        "reg_lambda": 2.0,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": 2,
+        "eval_metric": "rmse"
+      }
+    },
+    "cyclone": {
+      "name": "GeoVision Cyclone Impact AI",
+      "model_file": "hazard_cyclone_xgb.json",
+      "features_in_order": [
+        "cyclone_history_score",
+        "event_intensity",
+        "elevation_risk",
+        "flood_history_score",
+        "isolation_score",
+        "radio_vulnerability"
+      ],
+      "training_rows": 48174,
+      "training_towers": 8029,
+      "synthetic_event_intensity_levels": [
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+      ],
+      "cv_summary": {
+        "folds": [
+          {
+            "fold": 1,
+            "mae": 0.0023046412563106004,
+            "rmse": 0.003268895882357269,
+            "r2": 0.9994995807081958
+          },
+          {
+            "fold": 2,
+            "mae": 0.002507448024001643,
+            "rmse": 0.003567633807227083,
+            "r2": 0.999403898001552
+          },
+          {
+            "fold": 3,
+            "mae": 0.002422121088590732,
+            "rmse": 0.003702038525927866,
+            "r2": 0.9993595527806798
+          }
+        ],
+        "mae_mean": 0.0024114034563009917,
+        "rmse_mean": 0.0035128560718374058,
+        "r2_mean": 0.9994210104968092
+      },
+      "hyperparameters": {
+        "objective": "reg:squarederror",
+        "n_estimators": 220,
+        "learning_rate": 0.055,
+        "max_depth": 4,
+        "min_child_weight": 3,
+        "subsample": 0.86,
+        "colsample_bytree": 0.9,
+        "reg_alpha": 0.03,
+        "reg_lambda": 2.0,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": 2,
+        "eval_metric": "rmse"
+      }
+    },
+    "compound": {
+      "name": "GeoVision Compound Disaster Impact AI",
+      "model_file": "hazard_compound_xgb.json",
+      "features_in_order": [
+        "flood_ai_score",
+        "earthquake_ai_score",
+        "cyclone_ai_score",
+        "isolation_score"
+      ],
+      "training_rows": 48174,
+      "training_towers": 8029,
+      "synthetic_event_intensity_levels": [
+        0.0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1.0
+      ],
+      "cv_summary": {
+        "folds": [
+          {
+            "fold": 1,
+            "mae": 0.003241429261239354,
+            "rmse": 0.004263299618378778,
+            "r2": 0.9986639019328001
+          },
+          {
+            "fold": 2,
+            "mae": 0.0034232198911021586,
+            "rmse": 0.0045283214277190955,
+            "r2": 0.998502838904974
+          },
+          {
+            "fold": 3,
+            "mae": 0.003258003944224676,
+            "rmse": 0.004304053814592588,
+            "r2": 0.9986536651212188
+          }
+        ],
+        "mae_mean": 0.0033075510321887297,
+        "rmse_mean": 0.004365224953563487,
+        "r2_mean": 0.9986068019863309
+      },
+      "hyperparameters": {
+        "objective": "reg:squarederror",
+        "n_estimators": 220,
+        "learning_rate": 0.055,
+        "max_depth": 4,
+        "min_child_weight": 3,
+        "subsample": 0.86,
+        "colsample_bytree": 0.9,
+        "reg_alpha": 0.03,
+        "reg_lambda": 2.0,
+        "tree_method": "hist",
+        "random_state": 42,
+        "n_jobs": 2,
+        "eval_metric": "rmse"
+      }
+    }
+  },
+  "common_thresholds": {
+    "high": 0.5,
+    "very_high": 0.7
+  },
+  "limitations": [
+    "Earthquake, cyclone and compound targets are transparent pseudo-labels, not calibrated physical probabilities.",
+    "Earthquake training uses the project's historical earthquake exposure index; operational shaking prediction requires ground-motion labels and/or authoritative shaking products.",
+    "Cyclone training uses the project's historical cyclone exposure index, which is limited by the currently uploaded cyclone record. Live mode can add GEE IBTrACS track/wind context, but the GEE catalog is a best-track archive rather than a forecast model.",
+    "Compound risk is a learned meta-model over the three hazard-AI outputs plus site isolation; it represents planning exposure, not a joint physical probability.",
+    "Cross-validation measures reproduction of the MVP pseudo-label logic, not real-world disaster forecasting skill."
+  ]
+}

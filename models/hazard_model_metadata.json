@@ -1,0 +1,51 @@
+{
+  "model_name": "GeoVision Flood / Heavy-Rain Impact AI",
+  "model_type": "XGBRegressor",
+  "target": "hazard_target_score",
+  "features_in_order": [
+    "rain_30d_percentile",
+    "flood_history_score",
+    "elevation_risk",
+    "slope_risk"
+  ],
+  "training_rows": 128464,
+  "training_towers": 8029,
+  "training_snapshots": 16,
+  "training_date_min": "2022-01-01",
+  "training_date_max": "2026-07-21",
+  "runtime_gee_features": [
+    "GSMaP 30-day rainfall",
+    "SRTM elevation",
+    "SRTM-derived slope"
+  ],
+  "local_static_feature": "historic flood susceptibility from project flood footprint",
+  "high_exposure_threshold": 0.5,
+  "very_high_exposure_threshold": 0.7,
+  "hyperparameters": {
+    "objective": "reg:squarederror",
+    "n_estimators": 260,
+    "learning_rate": 0.05,
+    "max_depth": 4,
+    "min_child_weight": 3,
+    "subsample": 0.85,
+    "colsample_bytree": 0.9,
+    "reg_alpha": 0.03,
+    "reg_lambda": 2.0,
+    "tree_method": "hist",
+    "random_state": 42,
+    "n_jobs": 2,
+    "eval_metric": "rmse"
+  },
+  "cv_summary": {
+    "mae_mean": 0.0014681474836244306,
+    "rmse_mean": 0.002837066955442227,
+    "r2_mean": 0.9989925182782808
+  },
+  "limitations": [
+    "The current target is a pseudo-label generated from rainfall stress, historic flood susceptibility, elevation and slope; it is not a calibrated flood probability.",
+    "Current CV metrics measure reproduction of the prototype hazard logic, not real-world flood-event forecasting skill.",
+    "Replace the pseudo-target with date-and-location matched observed flood labels before operational use.",
+    "GEE live mode depends on Earth Engine authentication, dataset availability and network access.",
+    "This file covers the Flood/Heavy-Rain submodel only; Earthquake, Cyclone and Compound models are packaged separately in the multi-hazard Model 2 system."
+  ]
+}

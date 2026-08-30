@@ -10,3 +10,5 @@ xgboost>=3.1.0
 scikit-learn>=1.6.0
 folium
 streamlit-folium
+earthengine-api>=1.5
+google-auth>=2.0

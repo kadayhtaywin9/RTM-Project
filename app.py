@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from site_ai import assess_site, model_status, recommend_sites_xgb
+from hazard_ai import hazard_model_status, run_hazard_ai
 
 try:
     import folium
@@ -22,9 +23,7 @@ except Exception:
     HAS_CLICK_MAP = False
 
 from geoai_engine import (
-    attach_rainfall_to_towers,
     coverage_summary,
-    outage_risk,
     recommend_sites,
     simulate_population_coverage,
 )
@@ -942,12 +941,12 @@ brand_header_html = f"""<style>
 
 st.markdown(brand_header_html, unsafe_allow_html=True)
 
-st.title("📡 Yangon Telecom Coverage & Resilience Planner")
+st.title("📡 GeoVision AI — Yangon Telecom Coverage & Resilience Planner")
 st.caption(
-    "Find underserved communities, review suggested tower locations, and test how disasters could affect telecom access."
+    "Multi-model AI: recommend new tower locations and estimate Flood, Earthquake, Cyclone and Compound disaster impact on existing towers."
 )
 st.info(
-    "This is a planning tool, not a live network monitor. Population and tower coverage are estimated from geographic data and should be confirmed with field and RF engineering checks."
+    "This is a planning tool, not a live operator network monitor. Disaster Impact AI can use GEE rainfall/terrain and cyclone archive context plus USGS earthquake events; population and telecom coverage remain geographic estimates requiring field and RF engineering validation."
 )
 
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -1252,142 +1251,278 @@ with t_ai:
 
 
 with t_disaster:
-    st.subheader("What happens to telecom access during a disaster?")
+    st.subheader("GeoVision Disaster Impact AI — multi-hazard exposure for existing towers")
     st.write(
-        "Choose a disaster scenario and severity. The simulator estimates which tower sites may become unavailable and how many people could still reach another nearby site within the planning radius."
+        "The old manual disaster-severity simulator has been replaced by Model 2, a multi-hazard AI system. "
+        "Choose Flood/Heavy Rain, Earthquake, Cyclone, or Compound. Each module converts its hazard data into "
+        "tower-level features and sends them to a trained XGBoost impact model; Compound AI then learns from the "
+        "three hazard-model outputs together."
     )
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        scenario = st.selectbox("Scenario", ["Flood / Heavy Rain", "Earthquake", "Cyclone", "Compound"])
-    with c2:
-        severity = st.slider("Scenario severity", 1, 5, 3)
-    rain_dates = sorted(rainfall.date.dt.strftime("%Y-%m-%d").unique().tolist())
-    with c3:
-        rain_date = st.selectbox("Rainfall snapshot", rain_dates, index=len(rain_dates) - 1)
-    with c4:
-        risk_threshold = st.slider("Site failure sensitivity", 0.30, 0.90, 0.60, 0.05)
-
-    risk_all = attach_rainfall_to_towers(tower_sites_all, rainfall, rain_date)
-    risk_all = outage_risk(risk_all, scenario, severity)
-    metrics, load_after = simulate_population_coverage(
-        pop_grid,
-        risk_all,
-        [AREA_ID[a] for a in selected_areas],
-        selected_areas,
-        service_radius_km,
-        risk_threshold,
+    hazard_label_to_type = {
+        "Flood / Heavy Rain": "flood",
+        "Earthquake": "earthquake",
+        "Cyclone": "cyclone",
+        "Compound": "compound",
+    }
+    hazard_label = st.selectbox(
+        "AI disaster model",
+        list(hazard_label_to_type.keys()),
+        index=0,
+        help="Compound AI runs all three hazard modules and combines their tower-level scores.",
     )
-    risk = risk_all[risk_all.analysis_area.isin(selected_areas)].sort_values("scenario_risk", ascending=False)
+    selected_hazard_type = hazard_label_to_type[hazard_label]
+    hz_status = hazard_model_status(selected_hazard_type)
 
-    a, b, c, d, e = st.columns(5)
-    a.metric("Sites estimated unavailable", f"{metrics.get('selected_failed_towers', 0):,}")
-    b.metric("People initially affected", f"{metrics.get('population_directly_affected', 0):,.0f}")
-    c.metric("People served by another site", f"{metrics.get('population_rerouted', 0):,.0f}")
-    d.metric("People potentially losing access", f"{metrics.get('population_losing_coverage', 0):,.0f}")
-    e.metric(
-        "Planning coverage after disaster",
-        f"{metrics.get('post_coverage_pct', 0):.1f}%",
-        f"{metrics.get('post_coverage_pct', 0)-metrics.get('baseline_coverage_pct', 0):+.1f} pp",
+    z1, z2, z3, z4 = st.columns(4)
+    z1.metric("Selected AI model", hazard_label)
+    z2.metric("Model type", hz_status["model_type"])
+    z3.metric("Training rows", f"{hz_status['training_rows']:,}")
+    z4.metric("Training towers", f"{hz_status['training_towers']:,}")
+
+    feature_contracts = {
+        "flood": "GEE GSMaP rainfall • SRTM elevation/slope • historic flood susceptibility",
+        "earthquake": "USGS recent earthquake event signal • historic seismic exposure • tower isolation/redundancy",
+        "cyclone": "GEE NOAA IBTrACS track/wind context • historic cyclone exposure • elevation/flood/isolation",
+        "compound": "Flood AI score • Earthquake AI score • Cyclone AI score • tower isolation",
+    }
+    st.caption(
+        f"**{hazard_label} feature contract:** {feature_contracts[selected_hazard_type]}. "
+        "Scores are planning exposure/impact scores, not calibrated physical disaster probabilities."
     )
 
-    fig = base_map(selected_areas, risk, zoom=8.6 if len(selected_areas) > 1 else 9.2)
-    draw = risk.head(2500).copy()
-    failed_draw = risk[risk.scenario_risk >= risk_threshold]
-    if len(failed_draw):
-        draw = pd.concat([draw, failed_draw]).drop_duplicates("tower_id")
-    fig.add_trace(
-        go.Scattermap(
-            lat=draw.lat,
-            lon=draw.lon,
-            mode="markers",
-            marker={
-                "size": np.where(draw.scenario_risk >= risk_threshold, 11, 7),
-                "color": draw.scenario_risk,
-                "cmin": 0,
-                "cmax": 1,
-                "colorscale": "Turbo",
-                "showscale": True,
-                "colorbar": {
-                    "title": {"text": "Scenario risk", "side": "right"},
-                    "x": 1.02, "xanchor": "left",
-                    "y": 0.47, "yanchor": "middle",
-                    "len": 0.68, "thickness": 16, "outlinewidth": 0,
-                },
-            },
-            customdata=np.column_stack([
-                draw.tower_id,
-                draw.adm3_name,
-                draw.radios,
-                draw.scenario_risk,
-                draw.estimated_population_primary_5km,
-                draw.flood_frequency,
-                draw.get("r1h", pd.Series(0, index=draw.index)),
-                draw.get("r1q", pd.Series(0, index=draw.index)),
-            ]),
-            hovertemplate=(
-                "<b>Site %{customdata[0]}</b><br>%{customdata[1]} | %{customdata[2]}"
-                "<br>Scenario risk: %{customdata[3]:.1%}"
-                "<br>Primary population ≤5 km: %{customdata[4]:,.0f}"
-                "<br>Historic flood frequency: %{customdata[5]:.0f}"
-                "<br>1-month rain: %{customdata[6]:.1f} mm | anomaly: %{customdata[7]:.0f}%<extra></extra>"
+    h1, h2 = st.columns([1.2, 1])
+    with h1:
+        hazard_mode_label = st.radio(
+            "Disaster AI data source",
+            ["Auto: live sources then local fallback", "Live external data only", "Local cached demo"],
+            horizontal=False,
+            help=(
+                "Live Flood uses Google Earth Engine GSMaP/SRTM. Live Cyclone uses GEE NOAA IBTrACS. "
+                "Live Earthquake uses the USGS earthquake catalog because Earth Engine is not a real-time seismic-event source. "
+                "Auto keeps the demo working if a live source is unavailable."
             ),
-            name="Scenario risk",
         )
-    )
-    st.plotly_chart(fig, use_container_width=True, config=MAP_PLOTLY_CONFIG)
+    with h2:
+        st.markdown("**Model 2 structure**")
+        st.caption("Flood AI • Earthquake AI • Cyclone AI → Compound AI → tower exposure → population coverage impact")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Highest-risk sites and their baseline population load**")
-        risk_table = load_after[load_after.analysis_area.isin(selected_areas)].sort_values(
-            ["failed_in_scenario", "scenario_risk", "baseline_people_within_radius"], ascending=False
-        )[[
-            "tower_id", "analysis_area", "adm3_name", "scenario_risk", "failed_in_scenario",
-            "baseline_people_within_radius", "post_disaster_people_within_radius", "flood_frequency",
-        ]].head(30).copy()
-        risk_table["scenario_risk"] = (100 * risk_table.scenario_risk).round(1)
-        for col in ["baseline_people_within_radius", "post_disaster_people_within_radius"]:
-            risk_table[col] = risk_table[col].round(0).astype(int)
-        risk_table = risk_table.rename(columns={
-            "tower_id": "Tower ID",
-            "analysis_area": "Analysis Area",
-            "adm3_name": "Township",
-            "scenario_risk": "Scenario Risk (%)",
-            "failed_in_scenario": "Out of Service",
-            "baseline_people_within_radius": "Population Served Before",
-            "post_disaster_people_within_radius": "Population Load After Disaster",
-            "flood_frequency": "Historic Flood Frequency",
-        })
-        st.dataframe(risk_table, use_container_width=True, hide_index=True, height=460)
-    with c2:
-        st.markdown("**Surviving sites absorbing the largest extra population load**")
-        gain = load_after[
-            load_after.analysis_area.isin(selected_areas) & (~load_after.failed_in_scenario)
-        ].sort_values("load_change_people", ascending=False)[[
-            "tower_id", "analysis_area", "adm3_name", "radios", "baseline_people_within_radius",
-            "post_disaster_people_within_radius", "load_change_people", "load_ratio",
-        ]].head(30).copy()
-        for col in ["baseline_people_within_radius", "post_disaster_people_within_radius", "load_change_people"]:
-            gain[col] = gain[col].round(0).astype(int)
-        gain["load_ratio"] = gain.load_ratio.replace([np.inf, -np.inf], np.nan).round(2)
-        gain = gain.rename(columns={
-            "tower_id": "Tower ID",
-            "analysis_area": "Analysis Area",
-            "adm3_name": "Township",
-            "radios": "Technology",
-            "baseline_people_within_radius": "Population Served Before",
-            "post_disaster_people_within_radius": "Population Load After Disaster",
-            "load_change_people": "Extra Population Load",
-            "load_ratio": "Load Increase Ratio",
-        })
-        st.dataframe(gain, use_container_width=True, hide_index=True, height=460)
+    gee_project_id = None
+    gee_service_json = None
+    try:
+        gee_section = st.secrets.get("gee", {})
+        gee_project_id = gee_section.get("project_id")
+        gee_service_json = gee_section.get("service_account_json")
+    except Exception:
+        pass
 
-    st.warning(
-        "The disaster result is a scenario estimate, not a calibrated outage forecast. We do not have actual tower-failure labels, antenna propagation, backup-power status or capacity limits. "
-        "The model is strongest as a prioritization tool: which sites and populations should planners investigate first?"
-    )
+    mode_map = {
+        "Auto: live sources then local fallback": "auto",
+        "Live external data only": "gee",
+        "Local cached demo": "local",
+    }
 
+    selected_hazard_towers = tower_sites_all[tower_sites_all.analysis_area.isin(selected_areas)].copy()
+    run_col, info_col = st.columns([0.8, 2.2])
+    with run_col:
+        run_hazard = st.button("Run Disaster Impact AI", type="primary", key="run_hazard_ai")
+    with info_col:
+        st.caption(f"Will run {hazard_label} AI for {len(selected_hazard_towers):,} existing tower sites in the selected analysis area(s).")
+
+    if run_hazard:
+        with st.spinner(f"Running {hazard_label} AI and preparing tower exposure..."):
+            try:
+                hazard_result, hazard_run = run_hazard_ai(
+                    selected_hazard_towers,
+                    mode=mode_map[hazard_mode_label],
+                    project_id=gee_project_id,
+                    service_account_json=gee_service_json,
+                    hazard_type=selected_hazard_type,
+                )
+                st.session_state["hazard_ai_result"] = hazard_result
+                st.session_state["hazard_ai_run"] = hazard_run
+                st.session_state["hazard_ai_areas"] = tuple(selected_areas)
+                st.session_state["hazard_ai_type"] = selected_hazard_type
+            except Exception as exc:
+                st.session_state.pop("hazard_ai_result", None)
+                st.session_state.pop("hazard_ai_run", None)
+                st.session_state.pop("hazard_ai_type", None)
+                st.error(f"Disaster Impact AI could not run: {type(exc).__name__}: {exc}")
+
+    hazard_result = st.session_state.get("hazard_ai_result")
+    hazard_run = st.session_state.get("hazard_ai_run", {})
+    hazard_areas = st.session_state.get("hazard_ai_areas")
+    hazard_saved_type = st.session_state.get("hazard_ai_type")
+
+    if hazard_result is not None and hazard_areas == tuple(selected_areas) and hazard_saved_type == selected_hazard_type:
+        run_mode = hazard_run.get("mode")
+        if run_mode in {"gee", "live"}:
+            st.success(hazard_run.get("message", "Live disaster data used."))
+        elif run_mode == "mixed":
+            st.warning("Compound AI used a mixture of live and fallback data sources. Expand the source details below to see each submodel.")
+        elif not hazard_run.get("ok", True):
+            st.warning(hazard_run.get("message", "Live source unavailable; local fallback used."))
+        else:
+            st.info(hazard_run.get("message", "Local cached demo features used."))
+
+        if selected_hazard_type == "earthquake" and run_mode in {"live", "gee"}:
+            e1, e2, e3 = st.columns(3)
+            e1.metric("Recent events queried", f"{hazard_run.get('event_count', 0):,}")
+            mag = hazard_run.get("strongest_magnitude")
+            e2.metric("Strongest recent event", f"M {mag:.1f}" if isinstance(mag, (int, float)) else "None")
+            e3.metric("USGS window", f"{hazard_run.get('window_days', 30)} days")
+            if hazard_run.get("strongest_place"):
+                st.caption(f"Strongest queried event: {hazard_run.get('strongest_place')} • {hazard_run.get('strongest_time', '')}")
+        elif selected_hazard_type == "cyclone" and run_mode == "gee":
+            c1, c2, c3 = st.columns(3)
+            c1.metric("IBTrACS season", str(hazard_run.get("season", "—")))
+            c2.metric("Track points", f"{hazard_run.get('track_points', 0):,}")
+            c3.metric("Max track wind", f"{hazard_run.get('max_wind_knots', 0):.0f} kt")
+            st.caption("IBTrACS is best-track/archive observational context, not a cyclone forecast feed.")
+        elif selected_hazard_type == "compound":
+            with st.expander("Compound AI source details", expanded=False):
+                for name, run_info in hazard_run.get("submodels", {}).items():
+                    st.write(f"**{name.title()} AI:** {run_info.get('message', '')}")
+
+        hz = hazard_result.copy().sort_values("hazard_ai_score", ascending=False)
+        very_high = int((hz.hazard_ai_score >= hz_status["very_high_threshold"]).sum())
+        high_plus = int((hz.hazard_ai_score >= hz_status["high_threshold"]).sum())
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Towers analyzed", f"{len(hz):,}")
+        m2.metric("High + very high", f"{high_plus:,}")
+        m3.metric("Very high", f"{very_high:,}")
+        m4.metric("Highest exposure", f"{100*hz.hazard_ai_score.max():.1f}%")
+        m5.metric("Median exposure", f"{100*hz.hazard_ai_score.median():.1f}%")
+
+        data_source = str(hz.hazard_data_source.iloc[0]) if len(hz) else ""
+        data_time = str(hz.hazard_data_timestamp.iloc[0]) if len(hz) else ""
+        st.caption(f"Data/model source: {data_source}" + (f" • reference timestamp: {data_time}" if data_time else ""))
+
+        hazard_failure_threshold = st.slider(
+            "Treat tower as hazard-affected at AI exposure score",
+            min_value=0.30, max_value=0.90, value=float(hz_status["high_threshold"]), step=0.05,
+            key=f"hazard_ai_failure_threshold_{selected_hazard_type}",
+            help="Planning sensitivity threshold only. The AI score is not a calibrated tower-failure probability.",
+        )
+        risk_for_coverage = tower_sites_all.copy()
+        score_lookup = hz.set_index("tower_id")["hazard_ai_score"]
+        risk_for_coverage["scenario_risk"] = risk_for_coverage["tower_id"].map(score_lookup).fillna(0.0)
+        risk_for_coverage["risk_class"] = "Not assessed"
+        hazard_metrics, hazard_load = simulate_population_coverage(
+            pop_grid,
+            risk_for_coverage,
+            [AREA_ID[a] for a in selected_areas],
+            selected_areas,
+            service_radius_km,
+            hazard_failure_threshold,
+        )
+        q1, q2, q3, q4, q5 = st.columns(5)
+        q1.metric("AI-affected towers", f"{hazard_metrics.get('selected_failed_towers', 0):,}")
+        q2.metric("People initially affected", f"{hazard_metrics.get('population_directly_affected', 0):,.0f}")
+        q3.metric("People rerouted", f"{hazard_metrics.get('population_rerouted', 0):,.0f}")
+        q4.metric("Potentially losing access", f"{hazard_metrics.get('population_losing_coverage', 0):,.0f}")
+        q5.metric(
+            "Coverage after hazard",
+            f"{hazard_metrics.get('post_coverage_pct', 0):.1f}%",
+            f"{hazard_metrics.get('post_coverage_pct', 0)-hazard_metrics.get('baseline_coverage_pct', 0):+.1f} pp",
+        )
+        st.caption(
+            "Population impact uses the existing nearest-surviving-tower planning model. It is a geographic resilience estimate, not RF propagation or observed subscriber handover."
+        )
+
+        fig = base_map(selected_areas, hz, zoom=8.6 if len(selected_areas) > 1 else 9.2)
+        draw = hz.head(2500).copy()
+        critical = hz[hz.hazard_ai_score >= hz_status["high_threshold"]]
+        if len(critical):
+            draw = pd.concat([draw, critical]).drop_duplicates("tower_id")
+
+        # Build hazard-specific hover text while keeping the same map mechanics.
+        if selected_hazard_type == "flood":
+            draw["context1"] = draw.get("rain_30d_mm", pd.Series(np.nan, index=draw.index))
+            draw["context2"] = draw.get("rain_72h_mm", pd.Series(np.nan, index=draw.index))
+            context_template = "<br>30-day rain: %{customdata[4]:.1f} mm<br>72-hour rain: %{customdata[5]:.1f} mm"
+        elif selected_hazard_type == "earthquake":
+            draw["context1"] = draw.get("earthquake_history_score", pd.Series(np.nan, index=draw.index))
+            draw["context2"] = draw.get("event_intensity", pd.Series(np.nan, index=draw.index))
+            context_template = "<br>Historical seismic exposure: %{customdata[4]:.1%}<br>Recent-event signal: %{customdata[5]:.1%}"
+        elif selected_hazard_type == "cyclone":
+            draw["context1"] = draw.get("cyclone_history_score", pd.Series(np.nan, index=draw.index))
+            draw["context2"] = draw.get("event_intensity", pd.Series(np.nan, index=draw.index))
+            context_template = "<br>Historical cyclone exposure: %{customdata[4]:.1%}<br>Track/wind signal: %{customdata[5]:.1%}"
+        else:
+            draw["context1"] = draw.get("flood_ai_score", pd.Series(np.nan, index=draw.index))
+            draw["context2"] = draw.get("earthquake_ai_score", pd.Series(np.nan, index=draw.index))
+            context_template = "<br>Flood AI: %{customdata[4]:.1%}<br>Earthquake AI: %{customdata[5]:.1%}<br>Cyclone AI: %{customdata[6]:.1%}"
+
+        if selected_hazard_type == "compound":
+            customdata = np.column_stack([
+                draw.tower_id, draw.adm3_name, draw.hazard_ai_score, draw.hazard_class,
+                draw.context1, draw.context2, draw.get("cyclone_ai_score", pd.Series(np.nan, index=draw.index)),
+            ])
+        else:
+            customdata = np.column_stack([
+                draw.tower_id, draw.adm3_name, draw.hazard_ai_score, draw.hazard_class,
+                draw.context1, draw.context2,
+            ])
+        fig.add_trace(
+            go.Scattermap(
+                lat=draw.lat,
+                lon=draw.lon,
+                mode="markers",
+                marker={
+                    "size": np.where(draw.hazard_ai_score >= hz_status["very_high_threshold"], 11, 7),
+                    "color": draw.hazard_ai_score,
+                    "cmin": 0, "cmax": 1, "colorscale": "Turbo", "showscale": True,
+                    "colorbar": {"title": {"text": f"{hazard_label} AI", "side": "right"}, "x": 1.02, "len": 0.68},
+                },
+                customdata=customdata,
+                hovertemplate=(
+                    "<b>Tower %{customdata[0]}</b><br>%{customdata[1]}"
+                    f"<br>{hazard_label} AI exposure: %{{customdata[2]:.1%}} (%{{customdata[3]}})"
+                    + context_template + "<extra></extra>"
+                ),
+                name=f"{hazard_label} AI exposure",
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True, config=MAP_PLOTLY_CONFIG)
+
+        base_cols = ["tower_id", "analysis_area", "adm3_name", "networks", "radios", "hazard_ai_pct", "hazard_class"]
+        if selected_hazard_type == "flood":
+            extra_cols = ["rain_30d_mm", "rain_72h_mm", "elevation_m", "slope_deg", "flood_history_score"]
+        elif selected_hazard_type == "earthquake":
+            extra_cols = ["earthquake_history_score", "event_intensity", "isolation_score", "radio_vulnerability"]
+        elif selected_hazard_type == "cyclone":
+            extra_cols = ["cyclone_history_score", "event_intensity", "elevation_risk", "flood_history_score", "isolation_score"]
+        else:
+            extra_cols = ["flood_ai_score", "earthquake_ai_score", "cyclone_ai_score", "isolation_score"]
+        table = hz[[c for c in base_cols + extra_cols if c in hz.columns]].head(40).copy()
+        table["hazard_ai_pct"] = table["hazard_ai_pct"].round(1)
+        for c in table.columns:
+            if c.endswith("_score") or c in {"event_intensity", "radio_vulnerability", "elevation_risk"}:
+                table[c] = (100 * pd.to_numeric(table[c], errors="coerce")).round(1)
+            elif c in {"rain_30d_mm", "rain_72h_mm", "elevation_m", "slope_deg"}:
+                table[c] = pd.to_numeric(table[c], errors="coerce").round(1)
+        rename_map = {
+            "tower_id": "Tower ID", "analysis_area": "Analysis Area", "adm3_name": "Township",
+            "networks": "Operator", "radios": "Technology", "hazard_ai_pct": f"{hazard_label} AI Exposure (%)",
+            "hazard_class": "Exposure Class", "rain_30d_mm": "30-day Rain (mm)", "rain_72h_mm": "72-hour Rain (mm)",
+            "elevation_m": "Elevation (m)", "slope_deg": "Slope (deg)", "flood_history_score": "Historic Flood (%)",
+            "earthquake_history_score": "Historic Seismic Exposure (%)", "cyclone_history_score": "Historic Cyclone Exposure (%)",
+            "event_intensity": "Current/Recent Event Signal (%)", "isolation_score": "Isolation Risk (%)",
+            "radio_vulnerability": "Radio Vulnerability Proxy (%)", "elevation_risk": "Low-Terrain Risk (%)",
+            "flood_ai_score": "Flood AI (%)", "earthquake_ai_score": "Earthquake AI (%)", "cyclone_ai_score": "Cyclone AI (%)",
+        }
+        table = table.rename(columns=rename_map)
+        st.markdown(f"**Highest-exposure current tower sites — {hazard_label} AI**")
+        st.dataframe(table, use_container_width=True, hide_index=True, height=470)
+
+        with st.expander("Disaster Impact AI limitations and interpretation", expanded=False):
+            for item in hz_status["limitations"]:
+                st.write(f"- {item}")
+    else:
+        st.info(
+            f"Run {hazard_label} AI to generate tower-level disaster exposure. Auto mode tries the appropriate live source first and falls back to the project's cached data when necessary."
+        )
 with t_rain:
     st.subheader("Five-year rainfall context + historic flood exposure")
     st.write(
@@ -1468,9 +1603,11 @@ with t_rain:
 with t_method:
     st.subheader("Data inventory and methodology")
     st.markdown(
-        "**GeoVision AI site model:** the deployed `models/tower_site_xgb.json` classifier uses coverage gap, population demand, rural priority, hazard safety and elevation advantage. "
-        "For arbitrary map clicks, tower gap and elevation are evaluated at the exact coordinate; population, rural classification and hazard safety come from the containing Admin-4 area. "
-        "The current training target is a pseudo-label from the prior planning rule, so the model is an MVP screening model rather than operator-validated deployment intelligence."
+        "**Multi-model GeoVision AI:** Model 1 (`models/tower_site_xgb.json`) recommends new tower locations. "
+        "Model 2 is now a multi-hazard Disaster Impact AI with four XGBoost modules: Flood/Heavy Rain (`hazard_flood_xgb.json`), "
+        "Earthquake (`hazard_earthquake_xgb.json`), Cyclone (`hazard_cyclone_xgb.json`) and Compound (`hazard_compound_xgb.json`). "
+        "Flood uses live GEE GSMaP/SRTM when available; Cyclone uses GEE NOAA IBTrACS observational track/wind context; Earthquake uses recent USGS events because GEE is not the appropriate real-time earthquake-event source. "
+        "All four are hackathon/MVP exposure models with pseudo-label limitations and should not be presented as calibrated physical disaster probabilities."
     )
     drows = pd.DataFrame([
         ["WorldPop population GeoTIFF", meta.get("population_grid_points", 0), "Usable", "Population count per raster pixel; reference year 2020"],
@@ -1500,16 +1637,18 @@ with t_method:
         - Elevation score: `(candidate elevation - minimum candidate elevation) / (maximum - minimum)`. Higher terrain receives a higher score.
         - Default suitability weights: 40% gap + 25% population + 10% rural + 10% safety + 15% elevation.
 
-        **3. Flood/heavy-rain hazard**
-        - Historic flood polygons provide spatial susceptibility and flood frequency.
-        - WFP/CHIRPS 1-month rainfall percentile provides the event-stress trigger for the chosen date.
-        - Flood/rain hazard score = 70% historic flood susceptibility + 30% rainfall stress.
+        **3. GeoVision Disaster Impact AI (Model 2 — multi-hazard)**
+        - **Flood / Heavy Rain AI:** live GEE mode queries JAXA GSMaP rainfall plus SRTM elevation/slope and combines them with historic flood susceptibility.
+        - **Earthquake AI:** live mode queries recent USGS earthquake events, converts magnitude/depth/distance into a tower-level event signal, and combines it with the project's historic seismic exposure and tower vulnerability proxies.
+        - **Cyclone AI:** live GEE mode queries NOAA IBTrACS best-track/archive observations and derives a tower-level track/wind signal, combined with historic cyclone exposure, terrain/flood context and tower isolation. IBTrACS is observational archive context, not a forecast feed.
+        - **Compound AI:** a trained meta-model combines the Flood AI, Earthquake AI and Cyclone AI scores plus tower isolation to estimate multi-hazard planning exposure.
+        - Earthquake, cyclone and compound targets are transparent pseudo-labels. Replace them with verified event/outage labels before making operational probability claims.
 
-        **4. Disaster coverage simulation**
-        - Scenario risk combines hazard exposure, severity, site isolation and a radio-technology vulnerability proxy.
-        - Sites above the selected risk threshold are treated as unavailable for the scenario.
+        **4. AI-driven disaster coverage impact**
+        - The selected AI hazard score replaces the old manual severity scenario risk.
+        - Towers above the selected AI exposure threshold are treated as unavailable for planning sensitivity analysis.
         - Population is re-routed to the nearest surviving alternative among its 10 nearest precomputed sites.
-        - If no surviving alternative is inside the planning service radius, that population is counted as losing coverage.
+        - If no surviving alternative is inside the planning service radius, that population is counted as potentially losing coverage.
         """
     )
 
