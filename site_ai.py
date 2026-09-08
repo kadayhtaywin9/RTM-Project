@@ -16,10 +16,12 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+import xgboost as xgb
 from pyproj import Transformer
 from shapely.geometry import Point
-import xgboost as xgb
 from xgboost import XGBClassifier
+
+from models.tower_model import TowerRecommendationModel
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
@@ -154,7 +156,7 @@ def _sample_elevation(lat: float, lon: float) -> float | None:
             if not np.isfinite(val):
                 return None
             return val
-    except Exception:
+    except (OSError, StopIteration, ValueError, rasterio.errors.RasterioError):
         return None
 
 
@@ -182,7 +184,7 @@ def extract_site_features(lat: float, lon: float) -> dict[str, Any]:
     pop_row = None
     try:
         pop_row = assets["pop_by_pcode"].loc[pcode]
-    except Exception:
+    except KeyError:
         pop_row = None
     if pop_row is not None:
         population_2020 = float(pop_row.get("population_2020", proxy.get("population_2020", 0.0)))
@@ -249,18 +251,9 @@ def recommend_sites_xgb(candidates: pd.DataFrame, n_sites: int = 10, min_spacing
     """Rank candidate rows with the trained XGBoost model and enforce spacing."""
     if candidates.empty:
         return candidates.copy()
-    assets = _assets()
-    model: XGBClassifier = assets["model"]
-    threshold = float(assets["metadata"].get("provisional_decision_threshold", 0.65))
-
-    df = candidates.copy()
-    X = df[FEATURES].astype(float)
-    prob = model.predict_proba(X)[:, 1]
-    df["ai_probability"] = prob
-    df["ai_decision"] = np.where(prob >= threshold, "OPTIMAL CANDIDATE", "NOT OPTIMAL")
-    # Preserve the existing dashboard column contract: suitability_score is 0..100.
-    df["suitability_score"] = 100.0 * prob
-    df["recommendation_engine"] = "GeoVision AI"
+    # The model-serving layer validates the feature contract and adds the stable
+    # production output fields while preserving legacy dashboard columns.
+    df = TowerRecommendationModel().rank(candidates)
     ranked = df.sort_values(["ai_probability", "nearest_tower_km"], ascending=False)
 
     selected = []

@@ -1,9 +1,19 @@
 {
   "system_name": "GeoVision Disaster Impact AI \u2014 Multi-Hazard Model 2",
+  "feature_normalization": {
+    "schema_version": 1,
+    "cell_count_max": 32.0,
+    "cell_count_transform": "log1p(clip(value, 1, cell_count_max)) / log1p(cell_count_max)",
+    "population_column": "estimated_population_primary_5km",
+    "population_max": 45588.93891596794,
+    "population_transform": "log1p(clip(value, 0, population_max)) / log1p(population_max)",
+    "scope": "complete packaged 8,029-tower training universe; never recompute per request"
+  },
   "hazards": {
     "earthquake": {
       "name": "GeoVision Earthquake Impact AI",
       "model_file": "hazard_earthquake_xgb.json",
+      "model_sha256": "52c90abd9fa3384e4a89b81e780f855c81b2b880efb546805e14e4b9e3d60a0e",
       "features_in_order": [
         "earthquake_history_score",
         "event_intensity",
@@ -22,29 +32,80 @@
         1.0
       ],
       "cv_summary": {
+        "method": "GroupKFold by township",
+        "group_column": "adm3_name",
+        "n_splits": 3,
         "folds": [
           {
             "fold": 1,
-            "mae": 0.0020424214232673188,
-            "rmse": 0.003040293290553501,
-            "r2": 0.9995834614936975
+            "train_rows": 32070,
+            "validation_rows": 16104,
+            "validation_groups": [
+              "Botahtaung",
+              "Dagon Myothit (East)",
+              "Dagon Myothit (North)",
+              "Dawbon",
+              "Hlaingtharya (East)",
+              "Hlaingtharya (West)",
+              "Kamaryut",
+              "Mayangone",
+              "North Okkalapa",
+              "Shwepyithar",
+              "Thanlyin"
+            ],
+            "mae": 0.0049267494022632325,
+            "rmse": 0.012427761770261486,
+            "r2": 0.9929173313177789
           },
           {
             "fold": 2,
-            "mae": 0.002181597426060781,
-            "rmse": 0.003342326568710831,
-            "r2": 0.9994964168707134
+            "train_rows": 32136,
+            "validation_rows": 16038,
+            "validation_groups": [
+              "Ahlone",
+              "Dagon",
+              "Dala",
+              "Hmawbi",
+              "Insein",
+              "Kyauktada",
+              "Lanmadaw",
+              "Latha",
+              "Mingaladon",
+              "Pabedan",
+              "Sanchaung",
+              "Tamwe"
+            ],
+            "mae": 0.003390118956358714,
+            "rmse": 0.00562807171691135,
+            "r2": 0.9986872243474814
           },
           {
             "fold": 3,
-            "mae": 0.002173647228619336,
-            "rmse": 0.0032835982440802933,
-            "r2": 0.999510950793995
+            "train_rows": 32142,
+            "validation_rows": 16032,
+            "validation_groups": [
+              "Bahan",
+              "Dagon Myothit (Seikkan)",
+              "Dagon Myothit (South)",
+              "Hlaing",
+              "Kyauktan",
+              "Kyeemyindaing",
+              "Mingalartaungnyunt",
+              "Pazundaung",
+              "South Okkalapa",
+              "Thaketa",
+              "Thingangyun",
+              "Yankin"
+            ],
+            "mae": 0.0027439923753314922,
+            "rmse": 0.005356568742056148,
+            "r2": 0.9985167070236587
           }
         ],
-        "mae_mean": 0.002132555359315812,
-        "rmse_mean": 0.0032220727011148752,
-        "r2_mean": 0.9995302763861353
+        "mae_mean": 0.0036869535779844795,
+        "rmse_mean": 0.0078041340764096615,
+        "r2_mean": 0.996707087562973,
+        "metrics_interpretation": "proxy_formula_reproduction_only"
       },
       "hyperparameters": {
         "objective": "reg:squarederror",
@@ -60,11 +121,13 @@
         "random_state": 42,
         "n_jobs": 2,
         "eval_metric": "rmse"
-      }
+      },
+      "metrics_interpretation": "proxy_formula_reproduction_only; not disaster or outage forecasting skill"
     },
     "cyclone": {
       "name": "GeoVision Cyclone Impact AI",
       "model_file": "hazard_cyclone_xgb.json",
+      "model_sha256": "6e4300745462a540f3acb33bdf0f10278597799e31f5a693c60bedd5cd30b6e7",
       "features_in_order": [
         "cyclone_history_score",
         "event_intensity",
@@ -84,29 +147,80 @@
         1.0
       ],
       "cv_summary": {
+        "method": "GroupKFold by township",
+        "group_column": "adm3_name",
+        "n_splits": 3,
         "folds": [
           {
             "fold": 1,
-            "mae": 0.0023046412563106004,
-            "rmse": 0.003268895882357269,
-            "r2": 0.9994995807081958
+            "train_rows": 32070,
+            "validation_rows": 16104,
+            "validation_groups": [
+              "Botahtaung",
+              "Dagon Myothit (East)",
+              "Dagon Myothit (North)",
+              "Dawbon",
+              "Hlaingtharya (East)",
+              "Hlaingtharya (West)",
+              "Kamaryut",
+              "Mayangone",
+              "North Okkalapa",
+              "Shwepyithar",
+              "Thanlyin"
+            ],
+            "mae": 0.005205423373193018,
+            "rmse": 0.006628984802751202,
+            "r2": 0.9978676030287147
           },
           {
             "fold": 2,
-            "mae": 0.002507448024001643,
-            "rmse": 0.003567633807227083,
-            "r2": 0.999403898001552
+            "train_rows": 32136,
+            "validation_rows": 16038,
+            "validation_groups": [
+              "Ahlone",
+              "Dagon",
+              "Dala",
+              "Hmawbi",
+              "Insein",
+              "Kyauktada",
+              "Lanmadaw",
+              "Latha",
+              "Mingaladon",
+              "Pabedan",
+              "Sanchaung",
+              "Tamwe"
+            ],
+            "mae": 0.010446852483802177,
+            "rmse": 0.023999127618107418,
+            "r2": 0.9732559293375105
           },
           {
             "fold": 3,
-            "mae": 0.002422121088590732,
-            "rmse": 0.003702038525927866,
-            "r2": 0.9993595527806798
+            "train_rows": 32142,
+            "validation_rows": 16032,
+            "validation_groups": [
+              "Bahan",
+              "Dagon Myothit (Seikkan)",
+              "Dagon Myothit (South)",
+              "Hlaing",
+              "Kyauktan",
+              "Kyeemyindaing",
+              "Mingalartaungnyunt",
+              "Pazundaung",
+              "South Okkalapa",
+              "Thaketa",
+              "Thingangyun",
+              "Yankin"
+            ],
+            "mae": 0.002935665736606639,
+            "rmse": 0.003980483753165231,
+            "r2": 0.9992492881768151
           }
         ],
-        "mae_mean": 0.0024114034563009917,
-        "rmse_mean": 0.0035128560718374058,
-        "r2_mean": 0.9994210104968092
+        "mae_mean": 0.006195980531200611,
+        "rmse_mean": 0.011536198724674616,
+        "r2_mean": 0.9901242735143468,
+        "metrics_interpretation": "proxy_formula_reproduction_only"
       },
       "hyperparameters": {
         "objective": "reg:squarederror",
@@ -122,11 +236,13 @@
         "random_state": 42,
         "n_jobs": 2,
         "eval_metric": "rmse"
-      }
+      },
+      "metrics_interpretation": "proxy_formula_reproduction_only; not disaster or outage forecasting skill"
     },
     "compound": {
       "name": "GeoVision Compound Disaster Impact AI",
       "model_file": "hazard_compound_xgb.json",
+      "model_sha256": "fc70ff502f3eb595222289908c130530a9a91ad6a3cb0e0c18c5c94b007fcb86",
       "features_in_order": [
         "flood_ai_score",
         "earthquake_ai_score",
@@ -135,38 +251,201 @@
       ],
       "training_rows": 48174,
       "training_towers": 8029,
-      "synthetic_event_intensity_levels": [
-        0.0,
-        0.2,
-        0.4,
-        0.6,
-        0.8,
-        1.0
+      "proxy_scenarios": [
+        {
+          "rain_30d_percentile": 0.0,
+          "earthquake_event_intensity": 0.0,
+          "cyclone_event_intensity": 0.0
+        },
+        {
+          "rain_30d_percentile": 0.2,
+          "earthquake_event_intensity": 0.8,
+          "cyclone_event_intensity": 0.2
+        },
+        {
+          "rain_30d_percentile": 0.4,
+          "earthquake_event_intensity": 0.2,
+          "cyclone_event_intensity": 0.8
+        },
+        {
+          "rain_30d_percentile": 0.6,
+          "earthquake_event_intensity": 0.6,
+          "cyclone_event_intensity": 0.4
+        },
+        {
+          "rain_30d_percentile": 0.8,
+          "earthquake_event_intensity": 0.4,
+          "cyclone_event_intensity": 0.6
+        },
+        {
+          "rain_30d_percentile": 1.0,
+          "earthquake_event_intensity": 1.0,
+          "cyclone_event_intensity": 1.0
+        }
       ],
+      "training_feature_generation": {
+        "flood": "geographically cross-fitted XGBRegressor using hazard_model_metadata.json feature contract",
+        "earthquake": "geographically cross-fitted Earthquake Impact AI prediction",
+        "cyclone": "geographically cross-fitted Cyclone Impact AI prediction"
+      },
       "cv_summary": {
+        "method": "outer GroupKFold by township with fold-local Flood, Earthquake, and Cyclone upstream fits",
+        "group_column": "adm3_name",
+        "n_splits": 3,
+        "upstream_holdout_policy": "no validation township or tower used to fit any upstream model",
         "folds": [
           {
             "fold": 1,
-            "mae": 0.003241429261239354,
-            "rmse": 0.004263299618378778,
-            "r2": 0.9986639019328001
+            "train_towers": 5345,
+            "validation_towers": 2684,
+            "train_groups": [
+              "Ahlone",
+              "Bahan",
+              "Dagon",
+              "Dagon Myothit (Seikkan)",
+              "Dagon Myothit (South)",
+              "Dala",
+              "Hlaing",
+              "Hmawbi",
+              "Insein",
+              "Kyauktada",
+              "Kyauktan",
+              "Kyeemyindaing",
+              "Lanmadaw",
+              "Latha",
+              "Mingaladon",
+              "Mingalartaungnyunt",
+              "Pabedan",
+              "Pazundaung",
+              "Sanchaung",
+              "South Okkalapa",
+              "Tamwe",
+              "Thaketa",
+              "Thingangyun",
+              "Yankin"
+            ],
+            "validation_groups": [
+              "Botahtaung",
+              "Dagon Myothit (East)",
+              "Dagon Myothit (North)",
+              "Dawbon",
+              "Hlaingtharya (East)",
+              "Hlaingtharya (West)",
+              "Kamaryut",
+              "Mayangone",
+              "North Okkalapa",
+              "Shwepyithar",
+              "Thanlyin"
+            ],
+            "upstream_validation_tower_overlap": 0,
+            "upstream_validation_group_overlap": 0,
+            "mae": 0.0044104611576635975,
+            "rmse": 0.006419850057886082,
+            "r2": 0.9967833700623698
           },
           {
             "fold": 2,
-            "mae": 0.0034232198911021586,
-            "rmse": 0.0045283214277190955,
-            "r2": 0.998502838904974
+            "train_towers": 5356,
+            "validation_towers": 2673,
+            "train_groups": [
+              "Bahan",
+              "Botahtaung",
+              "Dagon Myothit (East)",
+              "Dagon Myothit (North)",
+              "Dagon Myothit (Seikkan)",
+              "Dagon Myothit (South)",
+              "Dawbon",
+              "Hlaing",
+              "Hlaingtharya (East)",
+              "Hlaingtharya (West)",
+              "Kamaryut",
+              "Kyauktan",
+              "Kyeemyindaing",
+              "Mayangone",
+              "Mingalartaungnyunt",
+              "North Okkalapa",
+              "Pazundaung",
+              "Shwepyithar",
+              "South Okkalapa",
+              "Thaketa",
+              "Thanlyin",
+              "Thingangyun",
+              "Yankin"
+            ],
+            "validation_groups": [
+              "Ahlone",
+              "Dagon",
+              "Dala",
+              "Hmawbi",
+              "Insein",
+              "Kyauktada",
+              "Lanmadaw",
+              "Latha",
+              "Mingaladon",
+              "Pabedan",
+              "Sanchaung",
+              "Tamwe"
+            ],
+            "upstream_validation_tower_overlap": 0,
+            "upstream_validation_group_overlap": 0,
+            "mae": 0.0044744196250247024,
+            "rmse": 0.00689852760953667,
+            "r2": 0.9963123617043027
           },
           {
             "fold": 3,
-            "mae": 0.003258003944224676,
-            "rmse": 0.004304053814592588,
-            "r2": 0.9986536651212188
+            "train_towers": 5357,
+            "validation_towers": 2672,
+            "train_groups": [
+              "Ahlone",
+              "Botahtaung",
+              "Dagon",
+              "Dagon Myothit (East)",
+              "Dagon Myothit (North)",
+              "Dala",
+              "Dawbon",
+              "Hlaingtharya (East)",
+              "Hlaingtharya (West)",
+              "Hmawbi",
+              "Insein",
+              "Kamaryut",
+              "Kyauktada",
+              "Lanmadaw",
+              "Latha",
+              "Mayangone",
+              "Mingaladon",
+              "North Okkalapa",
+              "Pabedan",
+              "Sanchaung",
+              "Shwepyithar",
+              "Tamwe",
+              "Thanlyin"
+            ],
+            "validation_groups": [
+              "Bahan",
+              "Dagon Myothit (Seikkan)",
+              "Dagon Myothit (South)",
+              "Hlaing",
+              "Kyauktan",
+              "Kyeemyindaing",
+              "Mingalartaungnyunt",
+              "Pazundaung",
+              "South Okkalapa",
+              "Thaketa",
+              "Thingangyun",
+              "Yankin"
+            ],
+            "upstream_validation_tower_overlap": 0,
+            "upstream_validation_group_overlap": 0,
+            "mae": 0.003355108747951713,
+            "rmse": 0.00463392217171539,
+            "r2": 0.9982817336315647
           }
         ],
-        "mae_mean": 0.0033075510321887297,
-        "rmse_mean": 0.004365224953563487,
-        "r2_mean": 0.9986068019863309
+        "mae_mean": 0.004079996510213338,
+        "rmse_mean": 0.005984099946379381,
+        "r2_mean": 0.9971258217994124,
+        "metrics_interpretation": "end-to-end proxy_formula_reproduction_only"
       },
       "hyperparameters": {
         "objective": "reg:squarederror",
@@ -182,18 +461,33 @@
         "random_state": 42,
         "n_jobs": 2,
         "eval_metric": "rmse"
-      }
+      },
+      "metrics_interpretation": "proxy_formula_reproduction_only; not joint probability or outage forecasting skill"
     }
   },
   "common_thresholds": {
     "high": 0.5,
     "very_high": 0.7
   },
+  "training_inputs": {
+    "tower_sites_population.csv": "8729ccac33d7aae952c9760535b395f4b31d0c2af61072527317ed86d47315e3",
+    "tower_hazard_static_features.csv": "27e522ee51eb032704fd4eec45acd5ae428147daff352b065971df2e8da77d31",
+    "hazard_training_data.csv": "589b1eeb7f184833c5c00c5afd610586884310cc99ee3e106b56fc808c870d9b",
+    "hazard_model_metadata.json": "e44d2505342bcb07b84982a4094a9ab74e906e6a2a8ee3d5ce19863599578922"
+  },
+  "versions": {
+    "python": "3.12.14",
+    "xgboost": "3.4.1",
+    "scikit_learn": "1.9.0",
+    "pandas": "2.3.3",
+    "numpy": "2.5.2"
+  },
   "limitations": [
     "Earthquake, cyclone and compound targets are transparent pseudo-labels, not calibrated physical probabilities.",
-    "Earthquake training uses the project's historical earthquake exposure index; operational shaking prediction requires ground-motion labels and/or authoritative shaking products.",
-    "Cyclone training uses the project's historical cyclone exposure index, which is limited by the currently uploaded cyclone record. Live mode can add GEE IBTrACS track/wind context, but the GEE catalog is a best-track archive rather than a forecast model.",
-    "Compound risk is a learned meta-model over the three hazard-AI outputs plus site isolation; it represents planning exposure, not a joint physical probability.",
-    "Cross-validation measures reproduction of the MVP pseudo-label logic, not real-world disaster forecasting skill."
+    "Metrics measure reproduction of authored proxy logic; they do not measure disaster, tower-outage, or service-impact forecasting skill.",
+    "Earthquake training uses the project's historical earthquake exposure index; operational assessment requires authoritative shaking products and verified tower outcomes.",
+    "Cyclone history is limited to the uploaded local record; the packaged model has not been retrained on full IBTrACS or verified cyclone/outage labels.",
+    "Compound validation isolates complete townships and fits every upstream model without held-out towers or geographies.",
+    "Compound risk is a meta-model over three hazard-AI outputs plus site isolation; it is a planning exposure score, not a joint physical probability."
   ]
 }

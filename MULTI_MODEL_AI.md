@@ -13,8 +13,9 @@
                                       v            v            v
                                   Flood AI    Earthquake AI  Cyclone AI
                                       |            |            |
-                                  GEE GSMaP       USGS       GEE IBTrACS
+                                  GEE GSMaP       USGS       JTWC forecast
                                   GEE SRTM       events       + local context
+                              GEE Dynamic World
                                       |            |            |
                                       +------------+------------+
                                                    |

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import math
+
 import numpy as np
 import pandas as pd
+from pyproj import Transformer
+from scipy.spatial import cKDTree
 
 EARTH_RADIUS_KM = 6371.0088
 
@@ -137,25 +140,75 @@ def simulate_population_coverage(
 ) -> tuple[dict[str, float], pd.DataFrame]:
     """Estimate population coverage before/after removing high-risk tower-site proxies.
 
-    Population pixels are assigned to the nearest surviving tower among the precomputed K nearest
-    alternatives. A pixel is considered covered when its nearest available tower is within the
-    user-selected planning radius. This is a screening model, not RF propagation modeling.
-    """
-    pop = grid["population"].astype(float)
-    area_id = grid["area_id"]
-    nearest_idx = grid["nearest_tower_idx"]
-    nearest_dist = grid["nearest_tower_dist_km"].astype(float)
+    Population pixels are assigned to their nearest surviving tower across the full tower table.
+    The precomputed K nearest alternatives are a fast path; exhausted rows are queried against
+    all survivors in EPSG:32647, matching population preprocessing. ``tower_id`` must retain the
+    complete preprocessed 0..N-1 ID set, although dataframe rows may be reordered. Only selected
+    areas lose towers, and only selected population areas contribute to the output totals.
 
-    pixel_mask = np.isin(area_id, np.asarray(selected_area_ids, dtype=area_id.dtype))
+    Per-tower affected, rerouted and lost population are attributed to the pixel's ORIGINAL
+    primary tower. Post-disaster load is instead assigned to the surviving destination tower.
+    Coverage uses the user-selected planning radius; this is not RF propagation modeling.
+    """
+    radius = float(service_radius_km)
+    threshold = float(failure_risk_threshold)
+    if not np.isfinite(radius) or radius < 0:
+        raise ValueError("service_radius_km must be finite and nonnegative.")
+    if not np.isfinite(threshold):
+        raise ValueError("failure_risk_threshold must be finite.")
+    required_grid = {"population", "area_id", "nearest_tower_idx", "nearest_tower_dist_km", "lon", "lat"}
+    if not required_grid.issubset(grid):
+        raise ValueError(f"Population grid is missing fields: {sorted(required_grid - set(grid))}")
+    required_towers = {"tower_id", "scenario_risk", "analysis_area", "lon", "lat"}
+    if not required_towers.issubset(towers.columns):
+        raise ValueError(f"Tower table is missing fields: {sorted(required_towers - set(towers.columns))}")
+
+    pop = np.asarray(grid["population"], dtype=float)
+    area_id = np.asarray(grid["area_id"])
+    nearest_idx = np.asarray(grid["nearest_tower_idx"])
+    nearest_dist = np.asarray(grid["nearest_tower_dist_km"], dtype=float)
+    pixel_lon = np.asarray(grid["lon"], dtype=float)
+    pixel_lat = np.asarray(grid["lat"], dtype=float)
+    if pop.ndim != 1 or any(a.shape != pop.shape for a in (area_id, pixel_lon, pixel_lat)):
+        raise ValueError("Population, area and coordinate arrays must be matching one-dimensional arrays.")
+    if not np.isfinite(pop).all() or (pop < 0).any():
+        raise ValueError("Population values must be finite and nonnegative.")
+    if nearest_idx.ndim != 2 or nearest_idx.shape[0] != len(pop) or nearest_idx.shape[1] < 1:
+        raise ValueError("Nearest-tower cache must have at least one candidate per population pixel.")
+    if nearest_dist.shape != nearest_idx.shape:
+        raise ValueError("Nearest-tower IDs and distance arrays must have matching shapes.")
+    if not np.issubdtype(nearest_idx.dtype, np.integer):
+        raise ValueError("Nearest-tower cache must contain integer tower IDs.")
+    if not np.isfinite(nearest_dist).all() or (nearest_dist < 0).any() or (np.diff(nearest_dist, axis=1) < 0).any():
+        raise ValueError("Cached tower distances must be finite, nonnegative and sorted nearest first.")
+
+    n_towers = len(towers)
+    raw_ids = pd.to_numeric(towers["tower_id"], errors="coerce").to_numpy(dtype=float)
+    if not np.array_equal(np.sort(raw_ids), np.arange(n_towers)):
+        raise ValueError("Pass the complete tower table with unique integer tower_id values 0..N-1.")
+    tower_ids = raw_ids.astype(np.intp)
+    if ((nearest_idx < 0) | (nearest_idx >= n_towers)).any():
+        raise ValueError("Nearest-tower cache references an ID outside the complete tower table.")
+    tower_risk = pd.to_numeric(towers["scenario_risk"], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(tower_risk).all() or ((tower_risk < 0) | (tower_risk > 1)).any():
+        raise ValueError("Tower scenario_risk values must be finite and between 0 and 1.")
+    if towers["analysis_area"].isna().any():
+        raise ValueError("Each tower must have an analysis_area.")
+    tower_lon = pd.to_numeric(towers["lon"], errors="coerce").to_numpy(dtype=float)
+    tower_lat = pd.to_numeric(towers["lat"], errors="coerce").to_numpy(dtype=float)
+    for lon, lat in ((tower_lon, tower_lat), (pixel_lon, pixel_lat)):
+        if not np.isfinite(lon).all() or not np.isfinite(lat).all() or (np.abs(lon) > 180).any() or (np.abs(lat) > 90).any():
+            raise ValueError("Tower and population coordinates must be finite valid longitude/latitude values.")
+
+    pixel_mask = np.isin(area_id, np.asarray(selected_area_ids))
     if not pixel_mask.any():
         return {}, towers.head(0).copy()
 
-    n_towers = len(towers)
     risk_arr = np.zeros(n_towers, dtype=float)
     area_arr = np.empty(n_towers, dtype=object)
-    risk_arr[towers.tower_id.to_numpy(int)] = towers.scenario_risk.to_numpy(float)
-    area_arr[towers.tower_id.to_numpy(int)] = towers.analysis_area.to_numpy(object)
-    failed = (risk_arr >= float(failure_risk_threshold)) & np.isin(area_arr, np.asarray(selected_areas, dtype=object))
+    risk_arr[tower_ids] = tower_risk
+    area_arr[tower_ids] = towers.analysis_area.to_numpy(object)
+    failed = (risk_arr >= threshold) & np.isin(area_arr, np.asarray(selected_areas, dtype=object))
 
     idx = nearest_idx[pixel_mask]
     dist = nearest_dist[pixel_mask]
@@ -163,16 +216,30 @@ def simulate_population_coverage(
 
     baseline_idx = idx[:, 0]
     baseline_dist = dist[:, 0]
-    baseline_covered = baseline_dist <= float(service_radius_km)
+    baseline_covered = baseline_dist <= radius
 
     alive_matrix = ~failed[idx]
     any_alive = alive_matrix.any(axis=1)
     first_alive_pos = np.argmax(alive_matrix, axis=1)
     row = np.arange(len(idx))
-    post_idx = idx[row, first_alive_pos]
-    post_dist = dist[row, first_alive_pos]
-    post_dist = np.where(any_alive, post_dist, np.inf)
-    post_covered = post_dist <= float(service_radius_km)
+    post_idx = np.where(any_alive, idx[row, first_alive_pos], -1)
+    post_dist = np.where(any_alive, dist[row, first_alive_pos], np.inf)
+
+    # K is only a cache size, not a limit on the network's available alternatives.
+    exhausted = ~any_alive
+    survivor_rows = ~failed[tower_ids]
+    if exhausted.any() and survivor_rows.any():
+        transformer = Transformer.from_crs(4326, 32647, always_xy=True)
+        tx, ty = transformer.transform(tower_lon[survivor_rows], tower_lat[survivor_rows])
+        px, py = transformer.transform(pixel_lon[pixel_mask][exhausted], pixel_lat[pixel_mask][exhausted])
+        tower_xy = np.column_stack([tx, ty])
+        pixel_xy = np.column_stack([px, py])
+        if not np.isfinite(tower_xy).all() or not np.isfinite(pixel_xy).all():
+            raise ValueError("Coordinates cannot be projected into the population grid's EPSG:32647 CRS.")
+        distance_m, survivor_pos = cKDTree(tower_xy).query(pixel_xy, k=1)
+        post_idx[exhausted] = tower_ids[survivor_rows][survivor_pos]
+        post_dist[exhausted] = distance_m / 1000.0
+    post_covered = post_dist <= radius
 
     primary_failed = failed[baseline_idx]
     rerouted = baseline_covered & primary_failed & post_covered
@@ -191,9 +258,18 @@ def simulate_population_coverage(
     )
 
     tower_load = towers.copy()
-    tower_load["failed_in_scenario"] = failed[tower_load.tower_id.to_numpy(int)]
-    tower_load["baseline_people_within_radius"] = baseline_load[tower_load.tower_id.to_numpy(int)]
-    tower_load["post_disaster_people_within_radius"] = post_load[tower_load.tower_id.to_numpy(int)]
+    tower_load["failed_in_scenario"] = failed[tower_ids]
+    tower_load["baseline_people_within_radius"] = baseline_load[tower_ids]
+    tower_load["post_disaster_people_within_radius"] = post_load[tower_ids]
+    for name, affected_mask in (
+        ("population_directly_affected", directly_affected),
+        ("population_rerouted", rerouted),
+        ("population_losing_coverage", lost),
+    ):
+        by_primary_tower = np.bincount(
+            baseline_idx[affected_mask], weights=p[affected_mask], minlength=n_towers,
+        )
+        tower_load[name] = by_primary_tower[tower_ids]
     base = tower_load["baseline_people_within_radius"].to_numpy(float)
     post = tower_load["post_disaster_people_within_radius"].to_numpy(float)
     tower_load["load_change_people"] = post - base
@@ -217,7 +293,7 @@ def simulate_population_coverage(
         "baseline_coverage_pct": 100.0 * baseline_served / max(total_pop, 1e-9),
         "post_coverage_pct": 100.0 * post_served / max(total_pop, 1e-9),
         "failed_towers": int(failed.sum()),
-        "selected_failed_towers": int(((risk_arr >= failure_risk_threshold) & np.isin(area_arr, selected_areas)).sum()),
+        "selected_failed_towers": int(failed.sum()),
         "k_alternatives": int(nearest_idx.shape[1]),
     }
     return metrics, tower_load

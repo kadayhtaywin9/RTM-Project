@@ -20,6 +20,7 @@ planning logic; it is not proof of real-world tower deployment performance.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -50,21 +51,21 @@ FEATURES = [
 TARGET = "optimal_site"
 GROUP = "spatial_group"
 
-BASE_PARAMS = dict(
-    objective="binary:logistic",
-    n_estimators=300,
-    learning_rate=0.05,
-    max_depth=3,
-    min_child_weight=2,
-    subsample=0.85,
-    colsample_bytree=0.85,
-    reg_alpha=0.05,
-    reg_lambda=2.0,
-    tree_method="hist",
-    eval_metric="logloss",
-    random_state=42,
-    n_jobs=2,
-)
+BASE_PARAMS = {
+    "objective": "binary:logistic",
+    "n_estimators": 300,
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "min_child_weight": 2,
+    "subsample": 0.85,
+    "colsample_bytree": 0.85,
+    "reg_alpha": 0.05,
+    "reg_lambda": 2.0,
+    "tree_method": "hist",
+    "eval_metric": "logloss",
+    "random_state": 42,
+    "n_jobs": 2,
+}
 
 
 def make_model(y_train: pd.Series) -> XGBClassifier:
@@ -105,8 +106,8 @@ def main() -> None:
 
         fold_rows.append({
             "fold": fold,
-            "train_rows": int(len(train_idx)),
-            "test_rows": int(len(test_idx)),
+            "train_rows": len(train_idx),
+            "test_rows": len(test_idx),
             "train_positive": int(y.iloc[train_idx].sum()),
             "test_positive": int(y_test.sum()),
             "test_negative": int(len(y_test) - y_test.sum()),
@@ -142,7 +143,7 @@ def main() -> None:
     predbest = (oof_prob >= best_threshold).astype(int)
 
     pooled = {
-        "rows": int(len(df)),
+        "rows": len(df),
         "positive": int(y.sum()),
         "negative": int((1-y).sum()),
         "spatial_groups": int(groups.nunique()),
@@ -212,19 +213,23 @@ def main() -> None:
     final_spw = negative / max(positive, 1)
 
     metadata = {
-        "model_name": "Yangon Telecom GeoAI XGBoost Site Suitability Prototype",
+        "model_name": "GeoVision AI Site Suitability Prototype",
         "model_type": "XGBClassifier",
+        "model_file": model_path.name,
+        "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
         "target": TARGET,
         "positive_class": 1,
         "features_in_order": FEATURES,
         "spatial_group": GROUP,
-        "training_rows": int(len(df)),
+        "training_rows": len(df),
         "training_positive": positive,
         "training_negative": negative,
         "class_weight_scale_pos_weight": final_spw,
         "provisional_decision_threshold": best_threshold,
         "label_source": sorted(df["label_source"].dropna().unique().tolist()),
         "hyperparameters": {**BASE_PARAMS, "scale_pos_weight": final_spw},
+        "training_input_sha256": hashlib.sha256(data_file.read_bytes()).hexdigest(),
+        "metrics_interpretation": "pseudo-label rule reproduction only; not deployment-success probability",
         "limitations": [
             "The target is a pseudo-label derived from the existing dashboard planning rule.",
             "The model currently learns to reproduce that rule, not real operator deployment success.",
@@ -245,6 +250,7 @@ def main() -> None:
         "numpy": np.__version__,
     }
     pooled["reload_validation_max_abs_probability_difference"] = reload_diff
+    pooled["metrics_interpretation"] = "pseudo-label rule reproduction only; not real-world deployment validation"
     (models_dir / "xgboost_metrics.json").write_text(
         json.dumps(pooled, indent=2), encoding="utf-8"
     )

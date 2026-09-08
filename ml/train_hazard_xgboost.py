@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Train Model 2: GeoVision Hazard AI flood/heavy-rain exposure prototype."""
-from pathlib import Path
+import hashlib
 import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -18,11 +20,11 @@ df = pd.read_csv(DATA / "hazard_training_data.csv")
 X = df[FEATURES].astype(float)
 y = df[TARGET].astype(float)
 groups = df["adm3_name"].astype(str)
-params = dict(
-    objective="reg:squarederror", n_estimators=260, learning_rate=0.05, max_depth=4,
-    min_child_weight=3, subsample=0.85, colsample_bytree=0.9, reg_alpha=0.03,
-    reg_lambda=2.0, tree_method="hist", random_state=42, n_jobs=2, eval_metric="rmse",
-)
+params = {
+    "objective": "reg:squarederror", "n_estimators": 260, "learning_rate": 0.05, "max_depth": 4,
+    "min_child_weight": 3, "subsample": 0.85, "colsample_bytree": 0.9, "reg_alpha": 0.03,
+    "reg_lambda": 2.0, "tree_method": "hist", "random_state": 42, "n_jobs": 2, "eval_metric": "rmse",
+}
 
 cv = GroupKFold(n_splits=5)
 oof = np.zeros(len(df), dtype=float)
@@ -44,18 +46,23 @@ for fold, (tr, te) in enumerate(cv.split(X, y, groups), 1):
 model = XGBRegressor(**params)
 model.fit(X, y)
 MODELS.mkdir(exist_ok=True)
-model.save_model(MODELS / "hazard_flood_xgb.json")
+model_path = MODELS / "hazard_flood_xgb.json"
+model.save_model(model_path)
 pd.DataFrame(rows).to_csv(DATA / "hazard_xgb_cv_metrics.csv", index=False)
 
 cvdf = pd.DataFrame(rows)
 metadata = {
-    "model_name": "GeoVision Hazard AI — Flood/Heavy-Rain Exposure Prototype",
+    "model_name": "GeoVision Flood / Heavy-Rain Impact AI",
     "model_type": "XGBRegressor",
+    "model_file": model_path.name,
+    "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
     "target": TARGET,
     "features_in_order": FEATURES,
-    "training_rows": int(len(df)),
+    "training_rows": len(df),
     "training_towers": int(df.tower_id.nunique()),
     "training_snapshots": int(pd.to_datetime(df.date).nunique()),
+    "training_date_min": pd.to_datetime(df.date).min().strftime("%Y-%m-%d"),
+    "training_date_max": pd.to_datetime(df.date).max().strftime("%Y-%m-%d"),
     "high_exposure_threshold": 0.50,
     "very_high_exposure_threshold": 0.70,
     "runtime_gee_features": ["GSMaP 30-day rainfall", "SRTM elevation", "SRTM-derived slope"],
@@ -64,8 +71,11 @@ metadata = {
         "mae_mean": float(cvdf.mae.mean()),
         "rmse_mean": float(cvdf.rmse.mean()),
         "r2_mean": float(cvdf.r2.mean()),
+        "metrics_interpretation": "proxy_formula_reproduction_only",
     },
     "hyperparameters": params,
+    "training_input_sha256": hashlib.sha256((DATA / "hazard_training_data.csv").read_bytes()).hexdigest(),
+    "metrics_interpretation": "proxy_formula_reproduction_only; not flood-event or tower-outage forecasting skill",
     "limitations": [
         "The current target is a pseudo-label, not a calibrated flood probability.",
         "CV measures reproduction of prototype hazard logic rather than real flood forecasting skill.",

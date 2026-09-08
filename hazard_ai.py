@@ -3,7 +3,7 @@
 Hazard modes:
 - flood: GEE GSMaP rainfall + SRTM terrain + project flood history
 - earthquake: USGS recent event signal + project historical seismic exposure
-- cyclone: GEE NOAA IBTrACS track/wind context + project historical cyclone exposure
+- cyclone: keyless JTWC current/forecast track context + project historical cyclone exposure
 - compound: learned meta-model over flood, earthquake and cyclone AI scores
 
 All current outputs are hackathon/MVP *exposure/impact scores*, not calibrated
@@ -13,16 +13,21 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
 from xgboost import XGBRegressor
+
+from data.cyclone_api import JTWCClient
+from data.earthquake_api import EarthquakeClient
+from data.gee_connector import (
+    EarthEngineConnector,
+    initialize_earth_engine,
+    validate_rainfall_samples,
+)
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
@@ -148,8 +153,15 @@ def _prepare_common(towers: pd.DataFrame) -> pd.DataFrame:
     out["earthquake_history_score"] = out["earthquake_score"].clip(0, 1)
     out["cyclone_history_score"] = out["cyclone_score"].clip(0, 1)
     out["radio_vulnerability"] = _radio_vulnerability(out.get("radios", pd.Series("", index=out.index)))
-    cell_count = pd.to_numeric(out.get("cell_count", pd.Series(1, index=out.index)), errors="coerce").fillna(1).clip(lower=1)
-    max_cells = max(float(cell_count.max()), 1.0)
+    normalization = a["multi_metadata"].get("feature_normalization", {})
+    max_cells = float(normalization.get("cell_count_max", 32.0))
+    if not np.isfinite(max_cells) or max_cells < 1.0:
+        raise ValueError("Invalid fixed cell_count_max in multi-hazard model metadata")
+    cell_count = (
+        pd.to_numeric(out.get("cell_count", pd.Series(1.0, index=out.index)), errors="coerce")
+        .fillna(1.0)
+        .clip(lower=1.0, upper=max_cells)
+    )
     out["site_redundancy_risk"] = 1.0 - np.log1p(cell_count) / np.log1p(max_cells)
     out["site_redundancy_risk"] = out["site_redundancy_risk"].clip(0, 1)
     return out
@@ -164,6 +176,7 @@ def _classify(out: pd.DataFrame, score: np.ndarray, source: str, data_timestamp:
         score,
         bins=[-0.001, 0.30, 0.50, 0.70, 1.001],
         labels=["Low", "Moderate", "High", "Very High"],
+        right=False,
     ).astype(str)
     out["hazard_type"] = hazard_type
     out["hazard_label"] = HAZARD_LABELS[hazard_type]
@@ -206,28 +219,14 @@ def _predict_flood(df: pd.DataFrame, source: str, data_timestamp: str | None = N
 
 
 def initialize_gee(project_id: str | None = None, service_account_json: str | dict[str, Any] | None = None) -> Any:
-    try:
-        import ee
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError("earthengine-api is not installed. Run pip install -r requirements.txt") from exc
-    project_id = project_id or os.getenv("GEE_PROJECT_ID") or os.getenv("EARTHENGINE_PROJECT")
-    service_account_json = service_account_json or os.getenv("GEE_SERVICE_ACCOUNT_JSON")
-    if service_account_json:
-        info = json.loads(service_account_json) if isinstance(service_account_json, str) else dict(service_account_json)
-        email = info.get("client_email")
-        if not email:
-            raise RuntimeError("GEE service-account JSON is missing client_email.")
-        credentials = ee.ServiceAccountCredentials(email, key_data=json.dumps(info))
-        ee.Initialize(credentials=credentials, project=project_id)
-    else:
-        ee.Initialize(project=project_id)
-    return ee
+    """Compatibility adapter for the cached connector layer."""
+    return initialize_earth_engine(project_id, service_account_json)
 
 
 def _featurecollection_to_frame(ee: Any, fc: Any) -> pd.DataFrame:
     try:
         return ee.data.computeFeatures({"expression": fc, "fileFormat": "PANDAS_DATAFRAME"})
-    except Exception:
+    except Exception:  # noqa: BLE001 - Earth Engine raises several backend-specific exception types
         info = fc.getInfo()
         return pd.DataFrame([f.get("properties", {}) for f in info.get("features", [])])
 
@@ -248,41 +247,36 @@ def local_flood_predictions(towers: pd.DataFrame, rain_date: str | None = None) 
 
 def gee_flood_predictions(towers: pd.DataFrame, project_id: str | None = None, service_account_json: str | dict[str, Any] | None = None) -> pd.DataFrame:
     a = _assets()
-    ee = initialize_gee(project_id=project_id, service_account_json=service_account_json)
     required = ["tower_id", "lat", "lon", "adm2_pcode", "flood_history_score"]
     missing = [c for c in required if c not in towers.columns]
     if missing:
         raise ValueError(f"Tower data missing required columns: {missing}")
 
-    rain_all = ee.ImageCollection("JAXA/GPM_L3/GSMaP/v6/operational").select("hourlyPrecipRateGC")
-    now_utc = pd.Timestamp.now(tz="UTC")
-    recent = rain_all.filterDate((now_utc - pd.Timedelta(days=45)).strftime("%Y-%m-%d"), (now_utc + pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
-    latest_ms = recent.aggregate_max("system:time_start").getInfo()
-    if latest_ms is None:
-        raise RuntimeError("GEE returned no recent GSMaP imagery for the last 45 days.")
-    end = ee.Date(latest_ms).advance(1, "hour")
-    rain30 = rain_all.filterDate(end.advance(-30, "day"), end).sum().rename("rain_30d_mm")
-    rain72 = rain_all.filterDate(end.advance(-72, "hour"), end).sum().rename("rain_72h_mm")
-    dem = ee.Image("USGS/SRTMGL1_003").select("elevation").rename("elevation_m")
-    slope = ee.Terrain.slope(dem).rename("slope_deg")
-    stack = ee.Image.cat([rain30, rain72, dem, slope])
-
-    features = []
-    for row in towers[required].itertuples(index=False):
-        features.append(ee.Feature(ee.Geometry.Point([float(row.lon), float(row.lat)]), {"tower_id": int(row.tower_id), "adm2_pcode": str(row.adm2_pcode)}))
-    sampled = stack.sampleRegions(collection=ee.FeatureCollection(features), properties=["tower_id", "adm2_pcode"], scale=90, geometries=False, tileScale=4)
-    gee_df = _featurecollection_to_frame(ee, sampled)
+    connector = EarthEngineConnector(project_id=project_id, service_account_json=service_account_json)
+    gee_df, timestamp = connector.environmental_features(towers)
     if gee_df.empty:
         raise RuntimeError("GEE sampling returned no tower features.")
+    gee_df = validate_rainfall_samples(gee_df, towers["tower_id"], timestamp)
     gee_df["tower_id"] = pd.to_numeric(gee_df["tower_id"], errors="coerce").astype("Int64")
+    gee_df = gee_df.rename(columns={
+        "rainfall_24h": "rain_24h_mm",
+        "rainfall_72h": "rain_72h_mm",
+        "rainfall_30d": "rain_30d_mm",
+        "elevation": "elevation_m",
+        "slope": "slope_deg",
+    })
     base = _prepare_common(towers)
     out = base.drop(columns=[c for c in ["elevation_m", "slope_deg"] if c in base.columns]).merge(
-        gee_df[["tower_id", "rain_30d_mm", "rain_72h_mm", "elevation_m", "slope_deg"]], on="tower_id", how="left"
+        gee_df[[c for c in ["tower_id", "rain_24h_mm", "rain_72h_mm", "rain_30d_mm", "elevation_m", "slope_deg", "land_cover", "land_cover_confidence"] if c in gee_df]],
+        on="tower_id",
+        how="left",
     )
     static = a["static"][["tower_id", "elevation_m", "slope_deg"]].rename(columns={"elevation_m": "elevation_m_cache", "slope_deg": "slope_deg_cache"})
     static["tower_id"] = pd.to_numeric(static["tower_id"], errors="coerce").astype("Int64")
     out = out.merge(static, on="tower_id", how="left")
-    for c in ["rain_30d_mm", "rain_72h_mm", "elevation_m", "slope_deg"]:
+    for c in ["rain_24h_mm", "rain_30d_mm", "rain_72h_mm", "elevation_m", "slope_deg"]:
+        if c not in out:
+            out[c] = np.nan
         out[c] = pd.to_numeric(out[c], errors="coerce")
     out["elevation_m"] = out["elevation_m"].fillna(out["elevation_m_cache"])
     out["slope_deg"] = out["slope_deg"].fillna(out["slope_deg_cache"])
@@ -290,8 +284,20 @@ def gee_flood_predictions(towers: pd.DataFrame, project_id: str | None = None, s
     out["rain_30d_percentile"] = _rain_percentile_by_area(out, a["rainfall"])
     out["elevation_risk"] = 1.0 - np.clip(out["elevation_m"].fillna(20.0) / 40.0, 0, 1)
     out["slope_risk"] = 1.0 - np.clip(out["slope_deg"].fillna(2.5) / 5.0, 0, 1)
-    timestamp = pd.to_datetime(int(latest_ms), unit="ms", utc=True).isoformat()
-    return _predict_flood(out, "Google Earth Engine — GSMaP + SRTM", timestamp)
+    return _predict_flood(out, "GEE GSMaP + SRTM; Dynamic World shown as context only", timestamp)
+
+
+def _recent_earthquake_features(towers: pd.DataFrame, days: int = 30) -> tuple[pd.DataFrame, dict[str, Any]]:
+    features, raw = EarthquakeClient().tower_features(towers, days=days)
+    meta = {
+        "event_count": int(raw.get("event_count", 0)),
+        "strongest_magnitude": raw.get("magnitude"),
+        "strongest_place": raw.get("place", ""),
+        "strongest_time": raw.get("time", ""),
+        "window_days": int(raw.get("window_days", days)),
+        "source": raw.get("source", "USGS FDSN Earthquake Catalog"),
+    }
+    return features, meta
 
 
 def _haversine_km(lat: np.ndarray, lon: np.ndarray, ev_lat: float, ev_lon: float) -> np.ndarray:
@@ -304,58 +310,8 @@ def _haversine_km(lat: np.ndarray, lon: np.ndarray, ev_lat: float, ev_lon: float
 
 
 def _usgs_recent_earthquakes(towers: pd.DataFrame, days: int = 30) -> tuple[np.ndarray, dict[str, Any]]:
-    now = pd.Timestamp.now(tz="UTC")
-    lat_min = max(-90, float(towers["lat"].min()) - 4.5)
-    lat_max = min(90, float(towers["lat"].max()) + 4.5)
-    lon_min = max(-180, float(towers["lon"].min()) - 4.5)
-    lon_max = min(180, float(towers["lon"].max()) + 4.5)
-    params = {
-        "format": "geojson",
-        "starttime": (now - pd.Timedelta(days=days)).strftime("%Y-%m-%d"),
-        "endtime": (now + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
-        "minlatitude": lat_min,
-        "maxlatitude": lat_max,
-        "minlongitude": lon_min,
-        "maxlongitude": lon_max,
-        "minmagnitude": 3.0,
-        "orderby": "time",
-        "limit": 2000,
-    }
-    url = "https://earthquake.usgs.gov/fdsnws/event/1/query?" + urlencode(params)
-    req = Request(url, headers={"User-Agent": "GeoVisionAI/1.0"})
-    with urlopen(req, timeout=15) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    features = payload.get("features", [])
-    lat = towers["lat"].to_numpy(float); lon = towers["lon"].to_numpy(float)
-    signal = np.zeros(len(towers), dtype=float)
-    strongest = {"mag": None, "place": "", "time": ""}
-    for f in features:
-        coords = (f.get("geometry") or {}).get("coordinates") or []
-        props = f.get("properties") or {}
-        if len(coords) < 3 or props.get("mag") is None:
-            continue
-        ev_lon, ev_lat, depth = float(coords[0]), float(coords[1]), max(float(coords[2] or 0), 0.0)
-        mag = float(props["mag"])
-        dist = _haversine_km(lat, lon, ev_lat, ev_lon)
-        mag_norm = np.clip((mag - 3.0) / 4.0, 0, 1)
-        depth_factor = np.exp(-depth / 180.0)
-        event = np.clip(1.35 * mag_norm * depth_factor * np.exp(-dist / 260.0), 0, 1)
-        signal = np.maximum(signal, event)
-        if strongest["mag"] is None or mag > strongest["mag"]:
-            ts = props.get("time")
-            strongest = {
-                "mag": mag,
-                "place": str(props.get("place") or ""),
-                "time": pd.to_datetime(ts, unit="ms", utc=True).isoformat() if ts else "",
-            }
-    return signal, {
-        "event_count": int(len(features)),
-        "strongest_magnitude": strongest["mag"],
-        "strongest_place": strongest["place"],
-        "strongest_time": strongest["time"],
-        "window_days": days,
-        "source": "USGS FDSN Earthquake Catalog",
-    }
+    features, meta = _recent_earthquake_features(towers, days=days)
+    return features["event_intensity"].to_numpy(float), meta
 
 
 def _predict_earthquake(towers: pd.DataFrame, event_intensity: np.ndarray, source: str, timestamp: str | None = None) -> pd.DataFrame:
@@ -374,79 +330,40 @@ def local_earthquake_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, di
 
 
 def live_earthquake_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
-    signal, meta = _usgs_recent_earthquakes(towers)
+    event_features, meta = _recent_earthquake_features(towers)
     timestamp = meta.get("strongest_time") or pd.Timestamp.now(tz="UTC").isoformat()
-    result = _predict_earthquake(towers, signal, "USGS recent earthquakes + project historical exposure", timestamp)
+    result = _predict_earthquake(towers, event_features["event_intensity"].to_numpy(float), "USGS recent earthquakes + project historical exposure", timestamp)
+    result = result.merge(
+        event_features[["tower_id", "magnitude", "depth", "distance_from_epicenter"]],
+        on="tower_id",
+        how="left",
+    )
     return result, meta
 
 
-def _gee_cyclone_signal(towers: pd.DataFrame, project_id: str | None = None, service_account_json: str | dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
-    ee = initialize_gee(project_id=project_id, service_account_json=service_account_json)
-    # IBTrACS is an archive/best-track dataset. We use the latest season available in GEE
-    # near the selected region as observational context, not as a cyclone forecast.
-    rect = ee.Geometry.Rectangle([
-        float(towers["lon"].min()) - 1.0, float(towers["lat"].min()) - 1.0,
-        float(towers["lon"].max()) + 1.0, float(towers["lat"].max()) + 1.0,
-    ])
-    fc = ee.FeatureCollection("NOAA/IBTrACS/v4").filter(ee.Filter.inList("BASIN", ["NI", "WP"])).filterBounds(rect.buffer(1800000))
-    latest_season = fc.aggregate_max("SEASON").getInfo()
-    if latest_season is None:
-        raise RuntimeError("GEE IBTrACS returned no cyclone tracks near the analysis region.")
-    latest = fc.filter(ee.Filter.eq("SEASON", latest_season))
+def _jtwc_cyclone_signal(towers: pd.DataFrame) -> tuple[np.ndarray, dict[str, Any], pd.DataFrame]:
+    """Build the live event signal from fresh JTWC operational forecast products."""
+    return JTWCClient().tower_features(towers)
 
-    def add_xy(f: Any) -> Any:
-        xy = f.geometry().coordinates()
-        return f.set({"storm_lon": xy.get(0), "storm_lat": xy.get(1)})
 
-    df = _featurecollection_to_frame(ee, latest.map(add_xy))
-    if df.empty:
-        raise RuntimeError("GEE IBTrACS latest-season query returned no track points.")
-    lat = towers["lat"].to_numpy(float); lon = towers["lon"].to_numpy(float)
+def _local_cyclone_signal(towers: pd.DataFrame) -> tuple[np.ndarray, dict[str, Any], pd.DataFrame]:
+    """Return historical background without replaying an old storm as current."""
     signal = np.zeros(len(towers), dtype=float)
-    max_wind = 0.0; best_name = ""; best_time = ""
-    wind_cols = [c for c in ["USA_WIND", "WMO_WIND", "NEWDELHI_WIND", "TOKYO_WIND"] if c in df.columns]
-    for _, row in df.iterrows():
-        try:
-            ev_lat = float(row.get("storm_lat")); ev_lon = float(row.get("storm_lon"))
-        except Exception:
-            continue
-        winds = [pd.to_numeric(row.get(c), errors="coerce") for c in wind_cols]
-        winds = [float(w) for w in winds if pd.notna(w) and float(w) > 0]
-        wind = max(winds) if winds else 25.0
-        dist = _haversine_km(lat, lon, ev_lat, ev_lon)
-        wind_norm = np.clip((wind - 20.0) / 120.0, 0, 1)
-        event = np.clip(1.25 * wind_norm * np.exp(-dist / 420.0), 0, 1)
-        signal = np.maximum(signal, event)
-        if wind > max_wind:
-            max_wind = wind
-            best_name = str(row.get("NAME") or "")
-            best_time = str(row.get("ISO_TIME") or "")
+    context = pd.DataFrame({
+        "tower_id": towers["tower_id"].to_numpy(),
+        "distance_to_cyclone": np.nan,
+        "wind_speed": np.nan,
+        "pressure": np.nan,
+        "cyclone_category": "Not assessed",
+        "track_status": "Background only; current storm status unknown",
+    })
     return signal, {
-        "season": int(latest_season),
-        "track_points": int(len(df)),
-        "max_wind_knots": float(max_wind),
-        "storm_name": best_name,
-        "storm_time": best_time,
-        "source": "Google Earth Engine NOAA IBTrACS v4",
-        "archive_note": "IBTrACS is observational best-track/archive context, not a forecast feed.",
-    }
-
-
-def _local_cyclone_signal(towers: pd.DataFrame) -> tuple[np.ndarray, dict[str, Any]]:
-    a = _assets(); c = a["cyclones"]
-    signal = np.zeros(len(towers), dtype=float)
-    if c.empty:
-        return signal, {"track_points": 0, "source": "Local cyclone cache"}
-    lat = towers["lat"].to_numpy(float); lon = towers["lon"].to_numpy(float)
-    for _, row in c.iterrows():
-        try:
-            ev_lat = float(row["Latitude"]); ev_lon = float(row["Longitude"]); wind = float(row.get("WindSpeed", 25) or 25)
-        except Exception:
-            continue
-        dist = _haversine_km(lat, lon, ev_lat, ev_lon)
-        wind_norm = np.clip((wind - 20.0) / 120.0, 0, 1)
-        signal = np.maximum(signal, np.clip(1.25 * wind_norm * np.exp(-dist / 420.0), 0, 1))
-    return signal, {"track_points": int(len(c)), "source": "Local uploaded cyclone record", "archive_note": "Only the uploaded project cyclone record is used in local mode."}
+        "data_status": "background_only",
+        "track_points": 0,
+        "source": "Project historical cyclone exposure; no current event signal",
+        "archive_rows": len(_assets()["cyclones"]),
+        "archive_note": "The limited historical record informs background exposure only. Current cyclone activity is unknown in local mode.",
+    }, context
 
 
 def _predict_cyclone(towers: pd.DataFrame, event_intensity: np.ndarray, source: str, timestamp: str | None = None) -> pd.DataFrame:
@@ -459,35 +376,96 @@ def _predict_cyclone(towers: pd.DataFrame, event_intensity: np.ndarray, source: 
 
 
 def local_cyclone_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
-    signal, meta = _local_cyclone_signal(towers)
-    result = _predict_cyclone(towers, signal, "Project cyclone exposure + local uploaded cyclone record", "")
+    signal, meta, context = _local_cyclone_signal(towers)
+    result = _predict_cyclone(towers, signal, "Project historical cyclone exposure; current storm status unknown", "")
+    result = result.merge(context, on="tower_id", how="left")
+    result["coastal_exposure"] = np.clip(0.7 * result["elevation_risk"] + 0.3 * result["flood_history_score"], 0, 1)
+    result["tower_vulnerability"] = result["radio_vulnerability"]
     return result, meta
 
 
-def gee_cyclone_predictions(towers: pd.DataFrame, project_id: str | None = None, service_account_json: str | dict[str, Any] | None = None) -> tuple[pd.DataFrame, dict[str, Any]]:
-    signal, meta = _gee_cyclone_signal(towers, project_id=project_id, service_account_json=service_account_json)
-    result = _predict_cyclone(towers, signal, "Google Earth Engine IBTrACS + project historical cyclone exposure", meta.get("storm_time") or str(meta.get("season", "")))
+def live_cyclone_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    signal, meta, context = _jtwc_cyclone_signal(towers)
+    active = meta.get("data_status") == "active"
+    source = (
+        "JTWC current/forecast track + project historical cyclone exposure"
+        if active
+        else "JTWC reports no fresh active storm; project background cyclone exposure"
+    )
+    result = _predict_cyclone(towers, signal, source, meta.get("storm_time") or "")
+    result = result.merge(context, on="tower_id", how="left")
+    result["coastal_exposure"] = np.clip(0.7 * result["elevation_risk"] + 0.3 * result["flood_history_score"], 0, 1)
+    result["tower_vulnerability"] = result["radio_vulnerability"]
     return result, meta
+
+
+def gee_cyclone_predictions(
+    towers: pd.DataFrame,
+    project_id: str | None = None,
+    service_account_json: str | dict[str, Any] | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Backward-compatible name; live cyclone data now comes from keyless JTWC."""
+    del project_id, service_account_json
+    return live_cyclone_predictions(towers)
+
+
+def _compound_tower_ids(frame: pd.DataFrame, label: str) -> pd.Index:
+    """Validate stable integer IDs before aligning independently produced outputs."""
+    if "tower_id" not in frame or frame.columns.duplicated().any():
+        raise ValueError(f"{label} must include one unambiguous tower_id column")
+    numeric = pd.to_numeric(frame["tower_id"], errors="coerce")
+    values = numeric.to_numpy(dtype=float, na_value=np.nan)
+    if (
+        frame["tower_id"].map(lambda value: isinstance(value, (bool, np.bool_))).any()
+        or not np.isfinite(values).all()
+        or (values < 0).any()
+        or (values >= 2**63).any()
+        or (values != np.floor(values)).any()
+    ):
+        raise ValueError(f"{label} tower IDs must be non-negative finite integers")
+    ids = pd.Index(numeric.astype("int64"), name="tower_id")
+    if ids.has_duplicates:
+        raise ValueError(f"{label} contains duplicate tower IDs")
+    return ids
+
+
+def _compound_child_scores(frame: pd.DataFrame, requested: pd.Index, label: str) -> np.ndarray:
+    ids = _compound_tower_ids(frame, label)
+    if len(ids) != len(requested) or not ids.difference(requested).empty or not requested.difference(ids).empty:
+        raise ValueError(f"{label} tower IDs must exactly match the requested towers")
+    if "hazard_ai_score" not in frame:
+        raise ValueError(f"{label} is missing hazard_ai_score")
+    scores = pd.to_numeric(frame["hazard_ai_score"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    if not np.isfinite(scores).all() or ((scores < 0) | (scores > 1)).any():
+        raise ValueError(f"{label} scores must be finite values between 0 and 1")
+    return pd.Series(scores, index=ids).reindex(requested).to_numpy(float)
 
 
 def _predict_compound(towers: pd.DataFrame, flood: pd.DataFrame, earthquake: pd.DataFrame, cyclone: pd.DataFrame, source: str, timestamp: str | None = None) -> pd.DataFrame:
+    requested = _compound_tower_ids(towers, "Requested")
+    if requested.empty:
+        raise ValueError("Compound analysis requires at least one requested tower")
+    # A missing upstream result is unknown, never a zero-exposure observation.
+    child_scores = {
+        f"{label}_ai_score": _compound_child_scores(frame, requested, label.capitalize())
+        for label, frame in [("flood", flood), ("earthquake", earthquake), ("cyclone", cyclone)]
+    }
     a = _assets(); out = _prepare_common(towers)
-    def score_frame(df: pd.DataFrame, col: str) -> pd.DataFrame:
-        x = df[["tower_id", "hazard_ai_score"]].copy().rename(columns={"hazard_ai_score": col})
-        x["tower_id"] = pd.to_numeric(x["tower_id"], errors="coerce").astype("Int64")
-        return x
-    out = out.merge(score_frame(flood, "flood_ai_score"), on="tower_id", how="left")
-    out = out.merge(score_frame(earthquake, "earthquake_ai_score"), on="tower_id", how="left")
-    out = out.merge(score_frame(cyclone, "cyclone_ai_score"), on="tower_id", how="left")
-    for c in ["flood_ai_score", "earthquake_ai_score", "cyclone_ai_score", "isolation_score"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).clip(0, 1)
+    prepared_ids = _compound_tower_ids(out, "Prepared")
+    if len(prepared_ids) != len(requested) or not prepared_ids.difference(requested).empty:
+        raise ValueError("Prepared tower IDs must exactly match the requested towers")
+    out["tower_id"] = prepared_ids
+    out = out.set_index("tower_id").loc[requested].reset_index()
+    for column, scores in child_scores.items():
+        out[column] = scores
+    out["isolation_score"] = pd.to_numeric(out["isolation_score"], errors="coerce").fillna(0).clip(0, 1)
     features = a["multi_metadata"]["hazards"]["compound"]["features_in_order"]
     score = a["models"]["compound"].predict(out[features].astype(float))
     out["compound_ai_score"] = np.clip(score, 0, 1)
     return _classify(out, out["compound_ai_score"], source, timestamp, "compound")
 
 
-def run_hazard_ai(
+def _run_hazard_ai(
     towers: pd.DataFrame,
     mode: str = "auto",
     project_id: str | None = None,
@@ -498,7 +476,8 @@ def run_hazard_ai(
     """Run a Model-2 hazard module.
 
     mode: auto | gee | local
-      - gee means live external data path: GEE for flood/cyclone, USGS for earthquake.
+      - gee means strict live external data: GEE for flood, USGS for earthquake,
+        and keyless JTWC public products for cyclone. The name is retained for API compatibility.
       - auto tries the live path and falls back locally per module.
     hazard_type: flood | earthquake | cyclone | compound
     """
@@ -507,6 +486,8 @@ def run_hazard_ai(
         raise ValueError("mode must be auto, gee, or local")
     if hazard_type not in HAZARD_LABELS:
         raise ValueError("hazard_type must be flood, earthquake, cyclone, or compound")
+    if hazard_type == "compound" and _compound_tower_ids(towers, "Requested").empty:
+        raise ValueError("Compound analysis requires at least one requested tower")
 
     if hazard_type == "flood":
         if mode in {"auto", "gee"}:
@@ -537,22 +518,27 @@ def run_hazard_ai(
     if hazard_type == "cyclone":
         if mode in {"auto", "gee"}:
             try:
-                result, meta = gee_cyclone_predictions(towers, project_id=project_id, service_account_json=service_account_json)
-                return result, {"mode": "gee", "ok": True, "hazard_type": hazard_type, "message": "GEE NOAA IBTrACS cyclone track/wind context used.", **meta}
+                result, meta = live_cyclone_predictions(towers)
+                message = (
+                    "Fresh JTWC operational current/forecast track used."
+                    if meta.get("data_status") == "active"
+                    else "No fresh active JTWC cyclone found; the result shows background exposure only."
+                )
+                return result, {"mode": "live", "ok": True, "hazard_type": hazard_type, "message": message, **meta}
             except Exception as exc:
                 if mode == "gee":
                     raise
                 result, meta = local_cyclone_predictions(towers)
-                return result, {"mode": "local", "ok": False, "hazard_type": hazard_type, "message": f"GEE IBTrACS unavailable; local cyclone fallback used. {type(exc).__name__}: {exc}", **meta}
+                return result, {"mode": "local", "ok": False, "hazard_type": hazard_type, "message": f"JTWC operational products unavailable; local cyclone fallback used. {type(exc).__name__}: {exc}", **meta}
         result, meta = local_cyclone_predictions(towers)
-        return result, {"mode": "local", "ok": True, "hazard_type": hazard_type, "message": "Local cyclone exposure used.", **meta}
+        return result, {"mode": "local", "ok": True, "hazard_type": hazard_type, "message": "Historical cyclone background used; current storm status is unknown.", **meta}
 
     # Compound: run all three hazard modules using the same mode and feed their outputs to the meta-model.
     flood, frun = run_hazard_ai(towers, mode=mode, project_id=project_id, service_account_json=service_account_json, rain_date=rain_date, hazard_type="flood")
     quake, qrun = run_hazard_ai(towers, mode=mode, project_id=project_id, service_account_json=service_account_json, rain_date=rain_date, hazard_type="earthquake")
     cyc, crun = run_hazard_ai(towers, mode=mode, project_id=project_id, service_account_json=service_account_json, rain_date=rain_date, hazard_type="cyclone")
-    sources = [str(flood.hazard_data_source.iloc[0]), str(quake.hazard_data_source.iloc[0]), str(cyc.hazard_data_source.iloc[0])]
-    timestamps = [str(x) for x in [flood.hazard_data_timestamp.iloc[0], quake.hazard_data_timestamp.iloc[0], cyc.hazard_data_timestamp.iloc[0]] if str(x)]
+    sources = [str(info.get("source", "")) for info in [frun, qrun, crun]]
+    timestamps = [str(info["data_timestamp"]) for info in [frun, qrun, crun] if info.get("data_timestamp")]
     result = _predict_compound(towers, flood, quake, cyc, "Compound AI: " + " | ".join(sources), max(timestamps) if timestamps else "")
     ok = bool(frun.get("ok", True) and qrun.get("ok", True) and crun.get("ok", True))
     run_mode = "live" if all(r.get("mode") in {"gee", "live"} for r in [frun, qrun, crun]) else ("local" if all(r.get("mode") == "local" for r in [frun, qrun, crun]) else "mixed")
@@ -561,5 +547,49 @@ def run_hazard_ai(
         "ok": ok,
         "hazard_type": "compound",
         "message": "Compound AI combined Flood, Earthquake and Cyclone AI outputs.",
+        "timestamp_scope": "latest_input_only",
         "submodels": {"flood": frun, "earthquake": qrun, "cyclone": crun},
     }
+
+
+def run_hazard_ai(
+    towers: pd.DataFrame,
+    mode: str = "auto",
+    project_id: str | None = None,
+    service_account_json: str | dict[str, Any] | None = None,
+    rain_date: str | None = None,
+    hazard_type: str = "flood",
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Run a hazard module and expose the output's observation provenance.
+
+    Modes are auto (live with fallback), gee (strict live; legacy name), and
+    local. Compound run_info includes each child's source and data_timestamp;
+    its legacy aggregate timestamp describes only the latest dated input, not
+    the freshness of all three inputs. Empty timestamps mean not available.
+    """
+    result, run_info = _run_hazard_ai(
+        towers, mode=mode, project_id=project_id,
+        service_account_json=service_account_json, rain_date=rain_date,
+        hazard_type=hazard_type,
+    )
+    run_info = dict(run_info)
+    for output_column, info_key in [
+        ("hazard_data_source", "source"),
+        ("hazard_data_timestamp", "data_timestamp"),
+    ]:
+        values = (
+            result[output_column].fillna("").astype(str).unique().tolist()
+            if output_column in result else []
+        )
+        if info_key == "source":
+            source = " | ".join(value for value in values if value)
+            if run_info.get("source") and run_info["source"] != source:
+                run_info["provider_source"] = run_info["source"]
+            run_info["source"] = source
+        else:
+            # Do not pick the first timestamp if an adapter ever emits mixed ages.
+            run_info["data_timestamp"] = values[0] if len(values) == 1 else ""
+            if len(values) > 1:
+                run_info["data_timestamps"] = values
+                run_info["timestamp_scope"] = "per_tower_output"
+    return result, run_info
