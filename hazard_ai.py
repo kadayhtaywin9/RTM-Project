@@ -28,6 +28,7 @@ from data.gee_connector import (
     initialize_earth_engine,
     validate_rainfall_samples,
 )
+from utils.live_assessment import assessment_state, unassessed_frame
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
@@ -256,6 +257,7 @@ def gee_flood_predictions(towers: pd.DataFrame, project_id: str | None = None, s
     gee_df, timestamp = connector.environmental_features(towers)
     if gee_df.empty:
         raise RuntimeError("GEE sampling returned no tower features.")
+    source_evidence = dict(gee_df.attrs.get("source_evidence", {}))
     gee_df = validate_rainfall_samples(gee_df, towers["tower_id"], timestamp)
     gee_df["tower_id"] = pd.to_numeric(gee_df["tower_id"], errors="coerce").astype("Int64")
     gee_df = gee_df.rename(columns={
@@ -284,7 +286,9 @@ def gee_flood_predictions(towers: pd.DataFrame, project_id: str | None = None, s
     out["rain_30d_percentile"] = _rain_percentile_by_area(out, a["rainfall"])
     out["elevation_risk"] = 1.0 - np.clip(out["elevation_m"].fillna(20.0) / 40.0, 0, 1)
     out["slope_risk"] = 1.0 - np.clip(out["slope_deg"].fillna(2.5) / 5.0, 0, 1)
-    return _predict_flood(out, "GEE GSMaP + SRTM; Dynamic World shown as context only", timestamp)
+    result = _predict_flood(out, "GEE GSMaP + SRTM; Dynamic World shown as context only", timestamp)
+    result.attrs["source_evidence"] = source_evidence
+    return result
 
 
 def _recent_earthquake_features(towers: pd.DataFrame, days: int = 30) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -296,6 +300,8 @@ def _recent_earthquake_features(towers: pd.DataFrame, days: int = 30) -> tuple[p
         "strongest_time": raw.get("time", ""),
         "window_days": int(raw.get("window_days", days)),
         "source": raw.get("source", "USGS FDSN Earthquake Catalog"),
+        "source_evidence": dict(raw.get("source_evidence", {})),
+        "source_checked_at": raw.get("source_evidence", {}).get("retrieved_at", ""),
     }
     return features, meta
 
@@ -320,6 +326,10 @@ def _predict_earthquake(towers: pd.DataFrame, event_intensity: np.ndarray, sourc
     features = a["multi_metadata"]["hazards"]["earthquake"]["features_in_order"]
     score = a["models"]["earthquake"].predict(out[features].astype(float))
     out["earthquake_ai_score"] = np.clip(score, 0, 1)
+    baseline = out[features].astype(float).copy()
+    baseline["event_intensity"] = 0.0
+    out["background_reference_score"] = np.clip(a["models"]["earthquake"].predict(baseline), 0, 1)
+    out["event_score_delta"] = out["earthquake_ai_score"] - out["background_reference_score"]
     return _classify(out, out["earthquake_ai_score"], source, timestamp, "earthquake")
 
 
@@ -331,7 +341,11 @@ def local_earthquake_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, di
 
 def live_earthquake_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     event_features, meta = _recent_earthquake_features(towers)
-    timestamp = meta.get("strongest_time") or pd.Timestamp.now(tz="UTC").isoformat()
+    timestamp = meta.get("strongest_time") or ""
+    if meta.get("event_count") == 0:
+        state = assessment_state("earthquake", dict(meta, mode="live"), "gee")
+        frame = towers.assign(hazard_data_source="USGS query: no qualifying earthquakes", hazard_data_timestamp="")
+        return unassessed_frame(frame, "earthquake", state), meta
     result = _predict_earthquake(towers, event_features["event_intensity"].to_numpy(float), "USGS recent earthquakes + project historical exposure", timestamp)
     result = result.merge(
         event_features[["tower_id", "magnitude", "depth", "distance_from_epicenter"]],
@@ -372,6 +386,10 @@ def _predict_cyclone(towers: pd.DataFrame, event_intensity: np.ndarray, source: 
     features = a["multi_metadata"]["hazards"]["cyclone"]["features_in_order"]
     score = a["models"]["cyclone"].predict(out[features].astype(float))
     out["cyclone_ai_score"] = np.clip(score, 0, 1)
+    baseline = out[features].astype(float).copy()
+    baseline["event_intensity"] = 0.0
+    out["background_reference_score"] = np.clip(a["models"]["cyclone"].predict(baseline), 0, 1)
+    out["event_score_delta"] = out["cyclone_ai_score"] - out["background_reference_score"]
     return _classify(out, out["cyclone_ai_score"], source, timestamp, "cyclone")
 
 
@@ -387,6 +405,10 @@ def local_cyclone_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, dict[
 def live_cyclone_predictions(towers: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     signal, meta, context = _jtwc_cyclone_signal(towers)
     active = meta.get("data_status") == "active"
+    if not active:
+        state = assessment_state("cyclone", dict(meta, mode="live"), "gee")
+        frame = towers.assign(hazard_data_source="JTWC source check: no usable active forecast", hazard_data_timestamp="")
+        return unassessed_frame(frame, "cyclone", state), meta
     source = (
         "JTWC current/forecast track + project historical cyclone exposure"
         if active
@@ -522,7 +544,7 @@ def _run_hazard_ai(
                 message = (
                     "Fresh JTWC operational current/forecast track used."
                     if meta.get("data_status") == "active"
-                    else "No fresh active JTWC cyclone found; the result shows background exposure only."
+                    else "No qualifying active JTWC forecast; event impact is not assessed."
                 )
                 return result, {"mode": "live", "ok": True, "hazard_type": hazard_type, "message": message, **meta}
             except Exception as exc:
@@ -539,7 +561,15 @@ def _run_hazard_ai(
     cyc, crun = run_hazard_ai(towers, mode=mode, project_id=project_id, service_account_json=service_account_json, rain_date=rain_date, hazard_type="cyclone")
     sources = [str(info.get("source", "")) for info in [frun, qrun, crun]]
     timestamps = [str(info["data_timestamp"]) for info in [frun, qrun, crun] if info.get("data_timestamp")]
-    result = _predict_compound(towers, flood, quake, cyc, "Compound AI: " + " | ".join(sources), max(timestamps) if timestamps else "")
+    child_states = [info.get("assessment", {}) for info in (frun, qrun, crun)]
+    if all(state.get("score_allowed") for state in child_states):
+        result = _predict_compound(towers, flood, quake, cyc, "Compound AI: " + " | ".join(sources), max(timestamps) if timestamps else "")
+    else:
+        # The saved meta-model was not trained for missing components. Never
+        # substitute zero or a background-only score for a no-event response.
+        result = towers.copy()
+        result["hazard_data_source"] = "Compound input checks: " + " | ".join(sources)
+        result["hazard_data_timestamp"] = ""
     ok = bool(frun.get("ok", True) and qrun.get("ok", True) and crun.get("ok", True))
     run_mode = "live" if all(r.get("mode") in {"gee", "live"} for r in [frun, qrun, crun]) else ("local" if all(r.get("mode") == "local" for r in [frun, qrun, crun]) else "mixed")
     return result, {
@@ -573,6 +603,9 @@ def run_hazard_ai(
         hazard_type=hazard_type,
     )
     run_info = dict(run_info)
+    if result.attrs.get("source_evidence"):
+        run_info["source_evidence"] = dict(result.attrs["source_evidence"])
+        run_info["source_checked_at"] = run_info["source_evidence"].get("retrieved_at", "")
     for output_column, info_key in [
         ("hazard_data_source", "source"),
         ("hazard_data_timestamp", "data_timestamp"),
@@ -592,4 +625,11 @@ def run_hazard_ai(
             if len(values) > 1:
                 run_info["data_timestamps"] = values
                 run_info["timestamp_scope"] = "per_tower_output"
+    state = assessment_state(hazard_type, run_info, mode)
+    run_info["assessment"] = state
+    if not state["score_allowed"]:
+        result = unassessed_frame(result, hazard_type, state)
+    else:
+        result["assessment_status"] = state["status"]
+        result["assessment_reason"] = state["reason"]
     return result, run_info

@@ -1,0 +1,22 @@
+{
+  "scope": "Packaged models; changing only event_intensity from zero to one. No external APIs.",
+  "interpretation": "High zero-event scores reflect historical/site proxy assumptions, not current disasters. Endpoint checks do not establish full monotonicity, accuracy or absence of bias.",
+  "models": {
+    "earthquake": {
+      "tower_count": 8029,
+      "zero_event_median_score_0_to_100": 44.11298930644989,
+      "zero_event_at_or_above_50_count": 1208,
+      "maximum_event_input_median_score_0_to_100": 84.12748575210571,
+      "endpoint_monotonicity_violations": 0
+    },
+    "cyclone": {
+      "tower_count": 8029,
+      "zero_event_median_score_0_to_100": 43.48806142807007,
+      "zero_event_at_or_above_50_count": 392,
+      "maximum_event_input_median_score_0_to_100": 83.94564390182495,
+      "endpoint_monotonicity_violations": 0
+    }
+  },
+  "observed_outage_validation": "Not available",
+  "bias_validation": "Not established; independent labels and representative geographic/event holdouts required."
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "csv_sha256": "09c5091bff74abe204130e93fa15e3474af2608c1bf4e2d8104fd89746d4d776",
+  "rows": 650,
+  "distinct_tiles": 479,
+  "license": "CC BY-NC-SA 4.0",
+  "source": "Speedtest by Ookla Global Fixed and Mobile Network Performance Maps",
+  "collected_on": "2026-09-10",
+  "quarters": [
+    {"start": "2026-01-01", "end_exclusive": "2026-04-01", "tiles": 319, "tests": 1363},
+    {"start": "2026-04-01", "end_exclusive": "2026-07-01", "tiles": 331, "tests": 1135}
+  ]
+}

@@ -15,7 +15,6 @@ RUNTIME_IMPORTS = (
     "numpy",
     "plotly.graph_objects",
     "geopandas",
-    "rasterio",
     "scipy.spatial",
     "pyproj",
     "shapely",
@@ -26,13 +25,16 @@ RUNTIME_IMPORTS = (
     "ee",
     "google.auth",
 )
+OPTIONAL_IMPORTS = {"rasterio": "Selected-coordinate GeoTIFF terrain sampling"}
 
 
 def requirement_errors(
     requirements_text: str,
     version_lookup: Callable[[str], str] = metadata.version,
+    *,
+    skip_packages: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Check every requirement, including its bounds, rather than selected imports."""
+    """Check requirement bounds, except explicitly designated optional packages."""
     try:
         from packaging.requirements import InvalidRequirement, Requirement
     except ImportError:
@@ -47,6 +49,8 @@ def requirement_errors(
             requirement = Requirement(line)
         except InvalidRequirement:
             errors.append(f"Invalid requirement in requirements.txt: {line}")
+            continue
+        if requirement.name.lower().replace("_", "-") in skip_packages:
             continue
         if requirement.marker is not None and not requirement.marker.evaluate():
             continue
@@ -66,7 +70,10 @@ def main() -> int:
         return 1
     requirements_path = PROJECT_ROOT / "requirements.txt"
     try:
-        errors = requirement_errors(requirements_path.read_text(encoding="utf-8"))
+        errors = requirement_errors(
+            requirements_path.read_text(encoding="utf-8"),
+            skip_packages=frozenset(OPTIONAL_IMPORTS),
+        )
     except (OSError, UnicodeError) as exc:
         print(f"Cannot read runtime requirements: {exc}")
         return 1
@@ -87,7 +94,14 @@ def main() -> int:
     if failed_imports:
         print("Runtime imports failed: " + ", ".join(failed_imports))
         return 1
-    print("All runtime requirements and imports passed.")
+    print("All required runtime requirements and imports passed.")
+    for module_name, capability in OPTIONAL_IMPORTS.items():
+        try:
+            importlib.import_module(module_name)
+        except (ImportError, OSError):
+            print(f"WARNING: Optional {module_name} could not load. {capability} is unavailable.")
+            print("The dashboard can start; site checks will label any stored terrain proxy.")
+            print("For a Windows Application Control block, ask your administrator to review the CodeIntegrity log. Do not disable protection.")
     return 0
 
 

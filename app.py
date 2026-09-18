@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -15,6 +16,14 @@ from engine.hazard_engine import get_hazard_engine
 from hazard_ai import hazard_model_status
 from site_ai import assess_site, model_status, recommend_sites_xgb
 from ui.hazard_results import render_hazard_results
+from utils.live_assessment import assessment_state, unassessed_frame
+from utils.sos import (
+    enrich_sos_incident,
+    fetch_sos_incidents,
+    sos_received_time,
+    update_sos_status,
+)
+from utils.study_areas import ANALYSIS_AREAS, AREA_ID, AREA_TOWNSHIPS, TOWNSHIP_TO_AREA
 
 try:
     import folium
@@ -34,24 +43,6 @@ from geoai_engine import (
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 
-YANGON_CITY_TOWNSHIPS = [
-    "Latha", "Lanmadaw", "Pabedan", "Kyauktada", "Botahtaung", "Pazundaung",
-    "Dagon", "Bahan", "Kamaryut", "Ahlone", "Kyeemyindaing", "Sanchaung",
-    "Mingalartaungnyunt", "Tamwe", "Hlaing", "Thingangyun", "Yankin",
-    "Dawbon", "Thaketa", "Insein", "Mayangone", "Dala", "Dagon Myothit (North)",
-    "South Okkalapa", "North Okkalapa", "Hlaingtharya (East)", "Hlaingtharya (West)",
-    "Shwepyithar", "Mingaladon", "Dagon Myothit (South)", "Dagon Myothit (East)",
-    "Dagon Myothit (Seikkan)", "Seikgyikanaungto",
-]
-AREA_TOWNSHIPS = {
-    "Yangon City": YANGON_CITY_TOWNSHIPS,
-    "Hmawbi": ["Hmawbi"],
-    "Thanlyin": ["Thanlyin"],
-    "Kyauktan": ["Kyauktan"],
-}
-ANALYSIS_AREAS = list(AREA_TOWNSHIPS)
-AREA_ID = {"Yangon City": 1, "Hmawbi": 2, "Thanlyin": 3, "Kyauktan": 4}
-TOWNSHIP_TO_AREA = {t: a for a, towns in AREA_TOWNSHIPS.items() for t in towns}
 DYNAMIC_WORLD_CLASSES = {
     0: "Water",
     1: "Trees",
@@ -991,6 +982,29 @@ def inject_global_styles():
             .gv-campus-name { font-size: 0.76rem; }
             .gv-campus-network { left: 62%; opacity: 0.32; }
         }
+        /* Compact workspace: controls and results take precedence over copy. */
+        .gv-hero {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 0.6rem 1.2rem; flex-wrap: wrap; padding: 0.85rem 1.05rem;
+            box-shadow: none;
+        }
+        .gv-hero h1 { margin: 0; padding: 0; font-size: 1.65rem; }
+        .gv-hero-meta { margin: 0; font-weight: 500; }
+        .gv-campus-header { min-height: 58px; padding: 0.45rem 0.85rem; }
+        .gv-campus-logo, .gv-campus-logo-fallback { width: 38px; height: 38px; flex-basis: 38px; }
+        .gv-kpi { min-height: 82px; padding: 0.65rem 0.8rem; box-shadow: none; }
+        .gv-kpi-value { font-size: clamp(1.25rem, 2vw, 1.8rem); }
+        .gv-evidence {
+            display: flex; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; gap: 0.4rem 1rem; padding: 0.65rem 0.85rem;
+        }
+        div[data-testid="stMetric"] { padding: 0.75rem; }
+        div[data-testid="stMetricValue"] { font-size: clamp(1.2rem, 1.9vw, 1.8rem); }
+        div[data-testid="stMetricLabel"] p { font-size: 0.78rem; }
+        @media (max-width: 720px) {
+            .gv-hero { align-items: flex-start; flex-direction: column; }
+            .gv-kpi-value, div[data-testid="stMetricValue"] { font-size: 1.55rem; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -998,18 +1012,14 @@ def inject_global_styles():
 
 
 def render_hero(selected_areas, tower_count: int):
-    area_text = "All 4 project areas" if len(selected_areas) == len(ANALYSIS_AREAS) else ", ".join(selected_areas)
+    area_text = "All project areas" if len(selected_areas) == len(ANALYSIS_AREAS) else ", ".join(selected_areas)
     st.markdown(
         f"""
         <section class="gv-hero">
-            <div class="gv-eyebrow">Telecom planning and resilience</div>
             <h1>GeoVision AI</h1>
-            <p class="gv-hero-copy">
-                Coverage gaps, tower priorities and multi-hazard impact analysis for Yangon.
-            </p>
             <div class="gv-hero-meta">
                 <span>{area_text}</span>
-                <span>{tower_count:,} mapped tower sites</span>
+                <span>{tower_count:,} towers</span>
                 <span>4 hazard models</span>
             </div>
         </section>
@@ -1078,11 +1088,11 @@ def render_university_header(logo_b64: str) -> None:
 def render_kpi_cards(baseline_metrics, tower_count: int, underserved_count: int, service_radius_km: float):
     coverage_pct = float(baseline_metrics.get("baseline_coverage_pct", 0))
     cards = [
-        ("Population in scope", f"{baseline_metrics.get('population_total', 0):,.0f}", "2020 planning baseline", "#5b82ff"),
-        ("Mapped tower sites", f"{tower_count:,}", "Observed site proxies", "#7da2ff"),
-        ("Population within range", f"{coverage_pct:.1f}%", f"{baseline_metrics.get('baseline_served', 0):,.0f} people", "#2dd4bf"),
-        ("Population outside range", f"{baseline_metrics.get('baseline_uncovered', 0):,.0f}", f"Beyond {service_radius_km:.1f} km", "#f59e0b"),
-        ("Underserved local areas", f"{underserved_count:,}", "Priority screening areas", "#f43f5e"),
+        ("Population · 2020", f"{baseline_metrics.get('population_total', 0):,.0f}", "", "#5b82ff"),
+        ("Tower sites", f"{tower_count:,}", "", "#7da2ff"),
+        ("Coverage", f"{coverage_pct:.1f}%", f"{baseline_metrics.get('baseline_served', 0):,.0f} people", "#2dd4bf"),
+        ("Outside coverage", f"{baseline_metrics.get('baseline_uncovered', 0):,.0f}", f"> {service_radius_km:.1f} km", "#f59e0b"),
+        ("Underserved areas", f"{underserved_count:,}", "", "#f43f5e"),
     ]
     card_html = "".join(
         (
@@ -1115,6 +1125,20 @@ earthquakes = load_csv("earthquakes_near_yangon.csv")
 cyclones = load_csv("cyclone_labels.csv")
 pop_grid = load_population_grid()
 rainfall["date"] = pd.to_datetime(rainfall["date"])
+
+
+def _config_value(name: str, default: str = "") -> str:
+    try:
+        value = st.secrets.get(name, None)
+    except StreamlitSecretNotFoundError:
+        value = None
+    if value is None or str(value).strip() == "":
+        value = os.getenv(name, default)
+    return str(value).strip()
+
+
+SOS_API_URL = _config_value("SOS_API_URL", "http://127.0.0.1:8000")
+SOS_API_KEY = _config_value("SOS_API_KEY", "")
 
 
 def expand_areas(areas):
@@ -1297,7 +1321,7 @@ def add_towers(fig, towers, max_points=2500):
             lat=draw.lat,
             lon=draw.lon,
             mode="markers",
-            marker={"size": 5, "color": "#2563EB", "opacity": 0.62},
+            marker={"size": 5, "color": "#2563EB", "opacity": 0.62, "symbol": "circle"},
             customdata=np.column_stack([
                 draw.adm3_name,
                 draw.radios,
@@ -1455,6 +1479,7 @@ def _ai_report_text(a):
         f"Population 2020 (Admin-4): {a.get('population_2020',0):,.0f}",
         f"Nearest observed tower-site: {a.get('nearest_tower_km',0):.3f} km",
         f"Elevation: {a.get('elevation_m') if a.get('elevation_m') is not None else 'N/A'} m",
+        f"Elevation source: {a.get('elevation_source', 'Not recorded')}",
         "",
         "Model inputs:",
     ]
@@ -1469,7 +1494,8 @@ def _ai_report_text(a):
         "",
         "Important limitation:",
         a.get("model_warning", "Prototype model."),
-        "Population, rural classification and safety are area-level proxies; tower gap and elevation are evaluated at the selected coordinate.",
+        "Population, rural classification and safety are area-level proxies; tower gap is evaluated at the selected coordinate. Elevation provenance is recorded above.",
+        a.get("terrain_warning") or "Terrain sample availability does not establish RF or engineering accuracy.",
         "This is a planning-screening result, not final RF, structural, land, permitting, power or backhaul approval.",
     ])
     return "\n".join(lines)
@@ -1482,6 +1508,9 @@ def render_ai_assessment(a, key_prefix="ai", technical_only=False):
         st.warning(a.get("reason", "The selected location cannot be evaluated."))
         return
 
+    if a.get("terrain_warning"):
+        st.warning(a["terrain_warning"])
+
     score = float(a["score_100"])
     if not technical_only:
         label = "Recommended for field review" if a.get("is_optimal") else "Lower priority"
@@ -1489,7 +1518,8 @@ def render_ai_assessment(a, key_prefix="ai", technical_only=False):
         c1.metric("Overall site score", f"{score:.1f}/100")
         c2.metric("Recommendation", label)
         c3.metric("Nearest existing tower", f"{float(a['nearest_tower_km']):.2f} km")
-        c4.metric("Elevation", f"{float(a['elevation_m']):.0f} m" if a.get("elevation_m") is not None else "N/A")
+        c4.metric("Elevation (area proxy)" if a.get("elevation_is_proxy") else "Elevation (raster)",
+                  f"{float(a['elevation_m']):.0f} m" if a.get("elevation_m") is not None else "N/A")
 
         if a.get("is_optimal"):
             st.success("This location is a strong planning candidate and should be considered for field review.")
@@ -1817,7 +1847,7 @@ def show_map_selection(event, candidate_source, recs, key_prefix):
     if tags and tags[-1] == "gap":
         show_nearest_tower_selection(event, candidate_source, key_prefix)
         return
-    st.caption("Click an orange/red underserved area to see its nearest tower, or click a green suggested location to see why it is recommended.")
+    st.caption("Select a gap or candidate site.")
 
 
 def add_flood_layer(fig):
@@ -1877,6 +1907,172 @@ def area_summary(df, selected_areas, threshold):
     return pd.DataFrame(rows)
 
 
+def _sos_focus_map(incident: dict):
+    lat = float(incident["latitude"])
+    lon = float(incident["longitude"])
+    tower_lat = incident.get("nearest_tower_lat")
+    tower_lon = incident.get("nearest_tower_lon")
+    tower_km = incident.get("nearest_tower_km")
+
+    fig = go.Figure()
+    if tower_lat is not None and tower_lon is not None:
+        fig.add_trace(
+            go.Scattermap(
+                lat=[lat, float(tower_lat)],
+                lon=[lon, float(tower_lon)],
+                mode="lines",
+                line={"width": 3, "color": "#f59e0b"},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scattermap(
+                lat=[float(tower_lat)],
+                lon=[float(tower_lon)],
+                mode="markers",
+                marker={"size": 17, "color": "#2dd4bf"},
+                text=[f"Tower {incident.get('nearest_tower_id', '—')}"],
+                customdata=[[incident.get("nearest_tower_township", "—"), incident.get("nearest_tower_networks", "—"), incident.get("nearest_tower_radios", "—")]],
+                hovertemplate=(
+                    "<b>%{text}</b><br>Township: %{customdata[0]}"
+                    "<br>Network: %{customdata[1]}<br>Radio: %{customdata[2]}<extra></extra>"
+                ),
+                name="Nearest tower",
+            )
+        )
+
+    fig.add_trace(
+        go.Scattermap(
+            lat=[lat],
+            lon=[lon],
+            mode="markers",
+            marker={"size": 21, "color": "#f43f5e"},
+            text=[incident.get("id", "SOS")],
+            customdata=[[incident.get("township", "—"), incident.get("accuracy_m")]],
+            hovertemplate=(
+                "<b>%{text}</b><br>Township: %{customdata[0]}"
+                "<br>GPS accuracy: ±%{customdata[1]:.0f} m"
+                "<br>%{lat:.5f}, %{lon:.5f}<extra></extra>"
+            ),
+            name="SOS location",
+        )
+    )
+
+    if tower_lat is not None and tower_lon is not None:
+        center_lat = (lat + float(tower_lat)) / 2
+        center_lon = (lon + float(tower_lon)) / 2
+    else:
+        center_lat, center_lon = lat, lon
+    distance = float(tower_km) if tower_km is not None else 0.0
+    zoom = 14 if distance < 0.7 else 13 if distance < 2 else 12 if distance < 5 else 11 if distance < 12 else 10
+    fig.update_layout(
+        map={"style": MAP_STYLE, "center": {"lat": center_lat, "lon": center_lon}, "zoom": zoom},
+        height=520,
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        legend={"orientation": "h", "y": 0.01, "x": 0.01},
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
+def sos_notification_sound():
+    audio = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="
+    st.markdown(
+        f"<audio autoplay><source src=\"data:audio/wav;base64,{audio}\" type=\"audio/wav\"></audio>",
+        unsafe_allow_html=True,
+    )
+
+
+@st.fragment(run_every="5s")
+def render_sos_emergency_panel():
+    incidents, error = fetch_sos_incidents(SOS_API_URL, SOS_API_KEY, limit=50)
+    if error:
+        st.error(f"SOS feed disconnected. {error}")
+        st.caption(f"Expected service: {SOS_API_URL}")
+        return
+
+    latest_id = incidents[0].get("id") if incidents else None
+    if not st.session_state.get("sos_monitor_initialized", False):
+        st.session_state["sos_monitor_initialized"] = True
+        st.session_state["sos_last_seen_id"] = latest_id
+    elif latest_id and latest_id != st.session_state.get("sos_last_seen_id"):
+        latest = enrich_sos_incident(incidents[0], admin3_geo, tower_sites_lookup_all)
+        st.session_state["sos_last_seen_id"] = latest_id
+        st.session_state["sos_selected_id"] = latest_id
+        st.toast(
+            f"New SOS: {latest['township']} · {latest['latitude']:.5f}, {latest['longitude']:.5f}",
+            icon="🚨",
+        )
+        sos_notification_sound()
+
+    new_count = sum(1 for x in incidents if x.get("status") == "NEW")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("SOS feed", "Connected")
+    c2.metric("New incidents", new_count)
+    c3.metric("Recent incidents", len(incidents))
+    st.caption("The dashboard checks the SOS service every 5 seconds. This is near-real-time polling, not telecom-grade push messaging.")
+
+    if not incidents:
+        st.info("No SOS incidents have been received yet. Open the resident SOS web app and send a test location.")
+        return
+
+    enriched = [enrich_sos_incident(x, admin3_geo, tower_sites_lookup_all) for x in incidents]
+    ids = {x["id"] for x in enriched}
+    selected_id = st.session_state.get("sos_selected_id")
+    if selected_id not in ids:
+        selected_id = enriched[0]["id"]
+        st.session_state["sos_selected_id"] = selected_id
+
+    st.markdown("#### Incoming SOS")
+    for item in enriched[:12]:
+        cols = st.columns([1.15, 1.35, 1.1, 1.0, 0.7])
+        cols[0].markdown(f"**{item['id']}**")
+        cols[0].caption(f"Received {sos_received_time(item.get('received_at'))}")
+        cols[1].write(item.get("township", "—"))
+        distance = item.get("nearest_tower_km")
+        cols[2].write(f"Tower {distance:.2f} km" if distance is not None else "Tower —")
+        cols[3].write(item.get("status", "NEW"))
+        if cols[4].button("Locate", key=f"locate_{item['id']}", type="primary" if item["id"] == selected_id else "secondary"):
+            st.session_state["sos_selected_id"] = item["id"]
+            selected_id = item["id"]
+            st.rerun(scope="fragment")
+
+    selected = next(x for x in enriched if x["id"] == selected_id)
+    st.divider()
+    st.markdown(f"### {selected['id']} · {selected.get('township', '—')}")
+    st.info(f"Received by SOS service: {sos_received_time(selected.get('received_at'))}")
+    st.caption("Receipt time is recorded by the server and displayed in Myanmar time (UTC+06:30). It is not the phone's location time or responder acknowledgement time.")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Latitude", f"{float(selected['latitude']):.5f}")
+    d2.metric("Longitude", f"{float(selected['longitude']):.5f}")
+    accuracy = selected.get("accuracy_m")
+    d3.metric("GPS accuracy", f"±{float(accuracy):.0f} m" if accuracy is not None else "—")
+    tower_km = selected.get("nearest_tower_km")
+    d4.metric("Nearest tower", f"{float(tower_km):.2f} km" if tower_km is not None else "—")
+
+    tower_id = selected.get("nearest_tower_id", "—")
+    st.caption(
+        f"Nearest mapped tower: {tower_id} · {selected.get('nearest_tower_networks', '—')} · "
+        f"{selected.get('nearest_tower_radios', '—')} · tower township: {selected.get('nearest_tower_township', '—')}"
+    )
+    st.plotly_chart(_sos_focus_map(selected), width="stretch", config=MAP_PLOTLY_CONFIG, key=f"sos_map_{selected_id}")
+
+    a1, a2, _ = st.columns([1, 1, 4])
+    if selected.get("status") == "NEW" and a1.button("Acknowledge", key=f"ack_{selected_id}"):
+        ok, status_error = update_sos_status(SOS_API_URL, selected_id, "ACKNOWLEDGED", SOS_API_KEY)
+        if ok:
+            st.rerun(scope="fragment")
+        else:
+            st.error(status_error or "Could not update SOS status.")
+    if selected.get("status") != "RESOLVED" and a2.button("Mark resolved", key=f"resolve_{selected_id}"):
+        ok, status_error = update_sos_status(SOS_API_URL, selected_id, "RESOLVED", SOS_API_KEY)
+        if ok:
+            st.rerun(scope="fragment")
+        else:
+            st.error(status_error or "Could not update SOS status.")
+
+
 # ---------- sidebar ----------
 inject_global_styles()
 st.sidebar.markdown(
@@ -1884,14 +2080,12 @@ st.sidebar.markdown(
     <div class="gv-sidebar-brand">
         <div class="gv-sidebar-mark">GV</div>
         <div>
-            <div class="gv-sidebar-title">Scenario settings</div>
-            <div class="gv-sidebar-subtitle">Area and assumptions</div>
+            <div class="gv-sidebar-title">Settings</div>
         </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
-st.sidebar.caption("Set the region and planning assumptions. The defaults are ready for a quick briefing.")
 
 study_area = st.sidebar.selectbox(
     "Study area",
@@ -1915,9 +2109,9 @@ else:
 
 selected_townships = expand_areas(selected_areas)
 
-st.sidebar.markdown("#### Coverage planning")
+st.sidebar.markdown("#### Coverage")
 service_radius_km = st.sidebar.slider(
-    "Population service radius",
+    "Service radius",
     1.0, 15.0, 5.0, 0.5,
     format="%.1f km",
     help="Population within this distance of an observed tower-site proxy is counted as geographically covered. This is a planning radius, not an RF propagation model.",
@@ -1942,7 +2136,6 @@ recommendation_engine = st.sidebar.selectbox(
 )
 
 with st.sidebar.expander("Advanced settings", expanded=False):
-    st.caption("Optional. Keep the defaults for a simple presentation.")
     min_spacing = st.slider(
         "Minimum spacing between new sites",
         2.0, 20.0, 8.0, 1.0,
@@ -1951,7 +2144,7 @@ with st.sidebar.expander("Advanced settings", expanded=False):
     )
     if recommendation_engine.startswith("GeoVision AI"):
         st.markdown("**GeoVision AI**")
-        st.caption("GeoVision AI uses fixed learned tree parameters. No manual scoring weights are applied in GeoVision AI mode.")
+        st.caption("Fixed model parameters")
     else:
         st.markdown("**Rule-based scoring weights**")
         w_gap = st.slider("Coverage need", 0.0, 1.0, 0.40, 0.05)
@@ -1959,22 +2152,6 @@ with st.sidebar.expander("Advanced settings", expanded=False):
         w_rural = st.slider("Rural priority", 0.0, 1.0, 0.10, 0.05)
         w_safe = st.slider("Hazard safety", 0.0, 1.0, 0.10, 0.05)
         w_elev = st.slider("Elevation advantage", 0.0, 1.0, 0.15, 0.05, help="Higher sampled terrain elevation receives a higher suitability score. Elevation is normalized across the current Yangon candidate locations.")
-
-scenario_area = "All project areas" if len(selected_areas) == len(ANALYSIS_AREAS) else ", ".join(selected_areas)
-scenario_method = "GeoVision AI" if recommendation_engine.startswith("GeoVision AI") else "Planning rules"
-st.sidebar.markdown(
-    f"""
-    <div class="gv-scenario-card">
-        <div class="gv-scenario-label">Current scenario</div>
-        <div class="gv-scenario-summary">
-            <strong>{scenario_area}</strong><br>
-            {service_radius_km:.1f} km service radius · gap ≥ {threshold_km:.1f} km<br>
-            {n_sites} candidate sites · {scenario_method}
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
 candidates = candidates_all[candidates_all.adm3_name.isin(selected_townships)].copy()
 towers = tower_sites_all[tower_sites_all.adm3_name.isin(selected_townships)].copy()
@@ -2003,19 +2180,6 @@ brand_logo_path = BASE / "assets" / "university_logo.jpg"
 brand_logo_b64 = image_to_base64(brand_logo_path)
 render_university_header(brand_logo_b64)
 render_hero(selected_areas, len(towers))
-st.markdown(
-    """
-    <details class="gv-scope">
-        <summary>Planning scope &amp; data notes</summary>
-        <p>
-            This is a decision-support tool, not a live operator network monitor. Disaster Impact AI can use
-            external hazard sources, while population and telecom coverage remain geographic estimates that
-            require field surveys and RF engineering validation.
-        </p>
-    </details>
-    """,
-    unsafe_allow_html=True,
-)
 render_kpi_cards(
     baseline_metrics,
     len(towers),
@@ -2024,9 +2188,10 @@ render_kpi_cards(
 )
 
 # ---------- tabs ----------
-t_overview, t_population, t_gap, t_recommend, t_ai, t_disaster, t_rain, t_method = st.tabs(
+t_overview, t_sos, t_population, t_gap, t_recommend, t_ai, t_disaster, t_rain, t_method = st.tabs(
     [
         "Overview",
+        "SOS Emergency",
         "Tower load",
         "Coverage gaps",
         "Suggested sites",
@@ -2037,27 +2202,29 @@ t_overview, t_population, t_gap, t_recommend, t_ai, t_disaster, t_rain, t_method
     ]
 )
 
+with t_sos:
+    render_sos_emergency_panel()
+
 with t_overview:
-    st.subheader("Where are the current coverage gaps?")
+    st.subheader("Network overview")
     fig = base_map(selected_areas, towers, zoom=8.45 if len(selected_areas) > 1 else 9.1)
     add_towers(fig, towers)
     add_candidates(fig, candidates, "Underserved local areas")
     add_recommendations(fig, recs)
-    st.caption("Orange/red points show local areas farther from existing towers. Green numbered points show suggested locations for further field review.")
-    overview_event = st.plotly_chart(fig, width="stretch", key="overview_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
-    overview_detail = st.container()
-    with overview_detail:
+    st.caption("Blue: towers · Orange: coverage gaps · Green: candidate sites")
+    if len(towers) > 2500:
+        st.caption(f"Map: 2,500 / {len(towers):,} towers · analysis uses all towers")
+    overview_event = st.plotly_chart(
+        fig, width="stretch", key="overview_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG,
+    )
+    with st.container():
         show_map_selection(overview_event, candidates, recs, "overview")
 
     st.markdown("#### Coverage need by area")
     st.dataframe(summary_area, width="stretch", hide_index=True)
 
 with t_population:
-    st.subheader("Where could existing tower sites be carrying the most population demand?")
-    st.write(
-        "The map estimates how much nearby population is associated with each mapped tower location. "
-        "Use it to spot areas where infrastructure may be carrying more geographic demand. It is not a count of real subscribers or network traffic."
-    )
+    st.subheader("Population by tower")
 
     p_rows = []
     for area in selected_areas:
@@ -2136,12 +2303,9 @@ with t_population:
         ]
         st.dataframe(top, width="stretch", hide_index=True, height=520)
 
-    st.caption(
-        "The 5 km population is the easier planning measure to compare. The broader nearby-population estimate assigns each person to the nearest mapped site even when farther away, so it highlights infrastructure scarcity rather than actual signal coverage."
-    )
 
 with t_gap:
-    st.subheader("Which communities are farthest from existing towers?")
+    st.subheader("Coverage gaps")
     underserved = candidates[candidates.nearest_tower_km >= threshold_km].sort_values(
         ["population_2020", "nearest_tower_km"], ascending=False
     )
@@ -2151,7 +2315,6 @@ with t_gap:
         fig = base_map(selected_areas, underserved if len(underserved) else candidates, zoom=8.6 if len(selected_areas) > 1 else 9.2)
         gap_source = underserved if len(underserved) else candidates
         add_candidates(fig, gap_source, "Underserved local areas")
-        st.caption("Click an orange/red area to see the nearest existing tower and the reason it is flagged as underserved.")
         under_event = st.plotly_chart(fig, width="stretch", key="underserved_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
         under_detail = st.container()
         with under_detail:
@@ -2171,17 +2334,10 @@ with t_gap:
         top.columns = ["Area", "Township", "Ward / Village Tract", "Population 2020", "Nearest tower (km)", "Tower ID", "Tower latitude", "Tower longitude", "Disaster risk /100"]
         st.dataframe(top, width="stretch", hide_index=True, height=490)
 
-    st.info(
-        "Distance alone does not tell the full story. Use population together with tower distance to identify where infrastructure investment could benefit more people."
-    )
 
 with t_recommend:
-    st.subheader("Where should new tower sites be investigated first?")
-    st.write(
-        "Green points are high-priority **planning candidates** based on tower distance, population need, disaster exposure and terrain. "
-        "Select a point to see the reason for the recommendation and the next action."
-    )
-    with st.expander("How these suggestions are calculated", expanded=False):
+    st.subheader("Candidate sites")
+    with st.expander("Ranking method", expanded=False):
         if recommendation_engine.startswith("GeoVision AI"):
             st.write(
                 "GeoVision AI ranks candidate areas using coverage need, population need, rural priority, disaster safety and terrain suitability. "
@@ -2197,7 +2353,6 @@ with t_recommend:
     fig = base_map(selected_areas, recs, zoom=8.6 if len(selected_areas) > 1 else 9.2)
     add_towers(fig, towers, max_points=1600)
     add_recommendations(fig, recs)
-    st.caption("Select a green numbered location to see why it is recommended and what should be checked next.")
     rec_event = st.plotly_chart(fig, width="stretch", key="recommendation_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
     rec_detail = st.container()
     with rec_detail:
@@ -2258,7 +2413,6 @@ with t_recommend:
     technical_table["population_2020"] = technical_table.population_2020.round(0).astype(int)
 
     with st.expander("Technical recommendation table", expanded=False):
-        st.caption("Raw coordinates and model factors are kept here for analysts, engineers and judges who want to inspect the calculation.")
         st.dataframe(technical_table, width="stretch", hide_index=True)
 
     st.download_button(
@@ -2267,15 +2421,10 @@ with t_recommend:
         file_name="yangon_suggested_tower_locations.csv",
         mime="text/csv",
     )
-    st.caption("Suggested coordinates are for field investigation only; they are not final approved construction coordinates.")
 
 with t_ai:
-    st.subheader("Check a proposed tower location")
+    st.subheader("Site checker")
     status = model_status()
-    st.write(
-        "Click anywhere inside the study area to check whether that location is a strong candidate for further tower planning. "
-        "The result explains the main reasons in plain language."
-    )
     with st.expander("About the model", expanded=False):
         st.info(
             f"GeoVision AI • {status['training_rows']} training rows • "
@@ -2287,7 +2436,6 @@ with t_ai:
 
     if HAS_CLICK_MAP:
         m = build_ai_click_map(selected_areas, previous)
-        st.caption("Click anywhere inside the blue study boundary. You can also enter an exact coordinate below.")
         click_state = st_folium(
             m,
             width=1100,
@@ -2307,7 +2455,7 @@ with t_ai:
             "The coordinate checker below remains fully functional."
         )
 
-    with st.expander("Enter an exact coordinate instead", expanded=not HAS_CLICK_MAP):
+    with st.expander("Coordinates", expanded=not HAS_CLICK_MAP):
         default_lat = float(clicked_point[0] if clicked_point else 16.86)
         default_lon = float(clicked_point[1] if clicked_point else 96.20)
         x1, x2, x3 = st.columns([1, 1, 0.7])
@@ -2325,27 +2473,17 @@ with t_ai:
     if clicked_point:
         render_ai_assessment(assess_site(clicked_point[0], clicked_point[1]), key_prefix="ai_checker")
     else:
-        st.caption("No location selected yet. Click the map or enter a coordinate to check a proposed site.")
+        st.caption("Select a point or enter coordinates.")
 
 
 with t_disaster:
-    st.subheader("Hazard impact analysis")
-    st.caption(
-        "Screen tower exposure to flood, cyclone, earthquake, or compound hazards. "
-        "Results are planning scores for prioritization, not public warning forecasts."
-    )
+    st.subheader("Hazard analysis")
 
     hazard_label_to_type = {
         "Flood / Heavy Rain": "flood",
         "Cyclone": "cyclone",
         "Earthquake": "earthquake",
         "Compound Risk": "compound",
-    }
-    feature_contracts = {
-        "flood": "GEE GSMaP rainfall • SRTM terrain • historic flood susceptibility; Dynamic World is displayed as environmental context",
-        "earthquake": "USGS post-event magnitude/depth/distance signal • historic seismic exposure • isolation and tower vulnerability",
-        "cyclone": "JTWC current position and forecast track/wind • packaged terrain and historical exposure • tower vulnerability",
-        "compound": "Flood, Earthquake and Cyclone model outputs • site isolation",
     }
 
     stored_hazard_type = st.session_state.get("hazard_ai_selected_type", "flood")
@@ -2365,18 +2503,7 @@ with t_disaster:
     st.session_state["hazard_ai_selected_type"] = selected_hazard_type
     hz_status = hazard_model_status(selected_hazard_type)
 
-    with st.expander("Data and model details", expanded=False):
-        st.caption(f"{hz_status['model_type']} · {hz_status['training_towers']:,} training towers · {hz_status['training_rows']:,} proxy/synthetic rows")
-        st.caption(
-            f"**{hazard_label} data:** {feature_contracts[selected_hazard_type]}. "
-            "Scores are planning exposure/impact scores, not calibrated physical disaster probabilities."
-        )
-        st.caption("Inputs used by the trained model: " + ", ".join(name.replace("_", " ") for name in hz_status["features"]))
-        st.caption("Training rows include repeated towers and synthetic scenarios. Validation measures fit to proxy labels; it does not measure observed disaster forecasting accuracy.")
-        if selected_hazard_type == "cyclone":
-            st.caption("The historical proxy contains one cyclone record. IBTrACS retraining and live GEE rainfall/land-cover inputs are not included in this model.")
-
-    h1, h2 = st.columns([1.4, 1])
+    h1, h2 = st.columns([2, 1], vertical_alignment="bottom")
     with h1:
         hazard_mode_label = st.radio(
             "Data source",
@@ -2384,13 +2511,9 @@ with t_disaster:
             horizontal=True,
             key="hazard_data_source_selector",
             help=(
-                "Live Flood uses Google Earth Engine GSMaP, SRTM and Dynamic World. Live Cyclone uses keyless JTWC operational forecast products. "
-                "Live Earthquake uses the USGS earthquake catalog because Earth Engine is not a real-time seismic-event source. "
-                "Automatic keeps the analysis available by using cached project data when a live source cannot be reached."
+                "Automatic: live with historical fallback. Live only: usable external evidence required. Demo data: packaged historical inputs."
             ),
         )
-    with h2:
-        st.caption("Automatic may use historical fallback. Live only refuses fallback. Demo data does not describe current hazard conditions.")
 
     gee_project_id = None
     gee_service_json = None
@@ -2409,11 +2532,8 @@ with t_disaster:
     analysis_signature = (selected_hazard_type, tuple(sorted(selected_areas)), mode_map[hazard_mode_label])
 
     selected_hazard_towers = tower_sites_all[tower_sites_all.analysis_area.isin(selected_areas)].copy()
-    run_col, info_col = st.columns([0.8, 2.2])
-    with run_col:
+    with h2:
         run_hazard = st.button("Run analysis", type="primary", key="run_hazard_ai")
-    with info_col:
-        st.caption(f"Will run {hazard_label} AI for {len(selected_hazard_towers):,} existing tower sites in the selected analysis area(s).")
 
     if run_hazard:
         with st.spinner(f"Running {hazard_label} AI and preparing tower exposure..."):
@@ -2445,6 +2565,16 @@ with t_disaster:
                     st.error("The analysis could not be completed. Review the technical details below.")
                 with st.expander("Technical details", expanded=False):
                     st.code(f"{type(exc).__name__}: {error_text}")
+                # Replace any earlier result with explicit unknowns, never keep
+                # stale scores/impact totals after a failed run.
+                failed_run = {"hazard_type": selected_hazard_type, "mode": "unavailable", "ok": False}
+                failed_state = assessment_state(selected_hazard_type, failed_run, mode_map[hazard_mode_label])
+                st.session_state["hazard_ai_result"] = unassessed_frame(selected_hazard_towers, selected_hazard_type, failed_state)
+                st.session_state["hazard_ai_run"] = failed_run
+                st.session_state["hazard_ai_areas"] = tuple(selected_areas)
+                st.session_state["hazard_ai_type"] = selected_hazard_type
+                st.session_state["hazard_ai_signature"] = analysis_signature
+                st.session_state["hazard_ai_completed_at"] = pd.Timestamp.now(tz="UTC").isoformat()
 
     hazard_result = st.session_state.get("hazard_ai_result")
     hazard_run = st.session_state.get("hazard_ai_run", {})
@@ -2470,19 +2600,14 @@ with t_disaster:
         )
     else:
         if hazard_result is not None:
-            st.warning("Analysis settings changed. Run analysis again to refresh the results for the selected model, area and data source.")
+            st.warning("Settings changed. Run analysis to refresh.")
         st.markdown(
-            '<section class="gv-empty-state"><h4>Your analysis will appear here</h4>'
-            '<p>Choose a hazard and data source, then run the analysis. You will get an exposure map, '
-            'a tower-review shortlist and an explicit what-if coverage scenario.</p>'
-            '<small>Demo data works without credentials. Live Flood requires Earth Engine setup.</small></section>',
+            '<section class="gv-empty-state"><p>Select a model and run analysis.</p></section>',
             unsafe_allow_html=True,
         )
 with t_rain:
-    st.subheader("Five-year rainfall context + historic flood exposure")
-    st.write(
-        "The rainfall file is a dekadal (10-day) WFP/CHIRPS subnational series. The dashboard uses the 1-month rolling rainfall percentile as an event-stress indicator and combines it with the historic flood footprint for the flood/heavy-rain scenario."
-    )
+    st.subheader("Rainfall & flood history")
+    st.caption("WFP / CHIRPS · 10-day observations")
 
     selected_adm2 = tower_sites_all[tower_sites_all.analysis_area.isin(selected_areas)].adm2_pcode.dropna().unique().tolist()
     r = rainfall[rainfall.PCODE.isin(selected_adm2)].copy()
@@ -2562,51 +2687,17 @@ with t_method:
         "Model 2 is now a multi-hazard Disaster Impact AI with four XGBoost modules: Flood/Heavy Rain (`hazard_flood_xgb.json`), "
         "Earthquake (`hazard_earthquake_xgb.json`), Cyclone (`hazard_cyclone_xgb.json`) and Compound (`hazard_compound_xgb.json`). "
         "Flood uses live GEE GSMaP/SRTM with Dynamic World environmental context when available; Cyclone uses keyless JTWC operational current/forecast products; Earthquake uses recent USGS events because GEE is not the appropriate real-time earthquake-event source. "
-        "All four are hackathon/MVP exposure models with pseudo-label limitations and should not be presented as calibrated physical disaster probabilities."
-    )
+            )
     drows = pd.DataFrame([
-        ["WorldPop population GeoTIFF", meta.get("population_grid_points", 0), "Usable", "Population count per raster pixel; reference year 2020"],
-        ["Yangon elevation GeoTIFF", meta.get("elevation_candidate_count", 0), "Usable", f"Elevation sampled at candidate points; {meta.get('elevation_candidate_min_m', 0):.0f}-{meta.get('elevation_candidate_max_m', 0):.0f} m in current candidate set"],
-        ["Yangon admin boundaries", meta.get("yangon_admin3_count", 0), "Usable", f"Valid-on {meta.get('boundary_valid_on', '')}"],
-        ["Yangon tower cells", meta.get("yangon_tower_cell_count", 0), "Usable with caveat", "Coordinate-dedup creates tower-site proxies"],
-        ["Historic flood polygons", meta.get("flood_feature_count", 0), "Usable", "Flood footprint/frequency inside analysis region"],
-        ["Rainfall time series", meta.get("rainfall_rows_yangon", 0), "Usable", f"{meta.get('rainfall_date_min')} to {meta.get('rainfall_date_max')}"],
-        ["Earthquakes near Yangon", meta.get("earthquake_rows_used", 0), "Usable", "Historical exposure index"],
-        ["Cyclone labels", meta.get("cyclone_rows_used", 0), "Limited", "Only one uploaded cyclone record"],
-    ], columns=["Layer", "Rows/pixels/features", "Status", "Use"])
+        ["WorldPop population GeoTIFF", meta.get("population_grid_points", 0), "Population count per raster pixel; reference year 2020"],
+        ["Yangon elevation GeoTIFF", meta.get("elevation_candidate_count", 0), f"Elevation sampled at candidate points; {meta.get('elevation_candidate_min_m', 0):.0f}-{meta.get('elevation_candidate_max_m', 0):.0f} m in current candidate set"],
+        ["Yangon admin boundaries", meta.get("yangon_admin3_count", 0), f"Valid-on {meta.get('boundary_valid_on', '')}"],
+        ["Yangon tower cells", meta.get("yangon_tower_cell_count", 0), "Coordinate-dedup creates tower-site proxies"],
+        ["Historic flood polygons", meta.get("flood_feature_count", 0), "Flood footprint/frequency inside analysis region"],
+        ["Rainfall time series", meta.get("rainfall_rows_yangon", 0), f"{meta.get('rainfall_date_min')} to {meta.get('rainfall_date_max')}"],
+        ["Earthquakes near Yangon", meta.get("earthquake_rows_used", 0), "Historical exposure index"]
+    ], columns=["Layer", "Rows/pixels/features", "Use"])
     st.dataframe(drows, width="stretch", hide_index=True)
-
-    st.markdown(
-        """
-        **1. Estimated population per tower-site proxy**
-        - Clip the WorldPop 2020 population raster to Yangon City, Hmawbi, Thanlyin and Kyauktan.
-        - For every populated raster pixel, precompute the 10 nearest observed tower-site proxies.
-        - The nearest site receives that pixel's population as its primary geographic catchment.
-        - A pixel is considered covered only when the nearest available site is inside the selected planning service radius.
-
-        **2. Population-aware tower recommendation**
-        - Coverage-gap score: larger distance to the nearest observed site = higher need.
-        - Population-demand score: log-normalized Admin-4 WorldPop total.
-        - Rural-priority flag: prioritizes non-urban Admin-4 areas.
-        - Hazard-safety score: favors relatively safer candidate areas.
-        - Elevation score: `(candidate elevation - minimum candidate elevation) / (maximum - minimum)`. Higher terrain receives a higher score.
-        - Default suitability weights: 40% gap + 25% population + 10% rural + 10% safety + 15% elevation.
-
-        **3. GeoVision Disaster Impact AI (Model 2 — multi-hazard)**
-        - **Flood / Heavy Rain AI:** live GEE mode validates JAXA GSMaP rainfall and combines it with SRTM terrain and historic flood susceptibility. Dynamic World land cover is displayed as environmental context and does not enter the trained model.
-        - **Earthquake AI:** live mode queries recent USGS earthquake events, converts magnitude/depth/distance into a tower-level event signal, and combines it with the project's historic seismic exposure and tower vulnerability proxies.
-        - **Cyclone AI:** live mode queries fresh JTWC operational current/forecast products through the U.S. Naval Research Laboratory ATCF feed, applies forecast-lead decay, and derives a tower-level track/wind signal. The model then combines that signal with historic cyclone exposure, terrain/flood context and tower isolation. No API key is required.
-        - **Historical cyclone limitation:** the packaged model still uses the project's limited historical exposure proxy. IBTrACS is the recommended archive for the next historical feature/retraining pipeline; it has not yet been completed in this package.
-        - **Compound AI:** a trained meta-model combines the Flood AI, Earthquake AI and Cyclone AI scores plus tower isolation to estimate multi-hazard planning exposure.
-        - Earthquake, cyclone and compound targets are transparent pseudo-labels. Replace them with verified event/outage labels before making operational probability claims.
-
-        **4. AI-driven disaster coverage impact**
-        - The selected AI hazard score replaces the old manual severity scenario risk.
-        - Towers above the selected AI exposure threshold are treated as unavailable for planning sensitivity analysis.
-        - Population is re-routed to the nearest surviving tower. The ten cached neighbours accelerate lookup; a spatial search finds surviving alternatives beyond that cache when necessary.
-        - If no surviving alternative is inside the planning service radius, that population is counted as potentially losing coverage.
-        """
-    )
 
     st.markdown("#### Critical interpretation")
     st.error(

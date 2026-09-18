@@ -1,5 +1,51 @@
 # Changelog
 
+## v21 — Live Assessment Gates & Restored Population Impact
+
+- Fail-closed live-assessment rules cover Flood, Earthquake, Cyclone and Compound Risk. Unknown input is never treated as zero risk; no-event source checks do not display historical-only event scores.
+- Skip earthquake/cyclone inference on no-event responses and skip the compound meta-model when any required component has no usable assessment.
+- Added a gray availability map with null scores/impact exports and cleared prior results after source failures. No-event source labels are distinct from usable live-event inputs.
+- Restored the hypothetical coverage-impact panel by default for eligible results, including a prominent initially-affected population total and the rerouted/lost-coverage split. Widened population cards after browser QA found truncation.
+- Preserved all saved models, input datasets, 73-hour rainfall policy, completeness checks, SOS receipt/clock features and the no-bandwidth-mask Overview.
+- 320 Python tests passed (264 retained plus 56 new); all four hazard app checks passed for demo/live fixtures, no-event/unavailable inputs, population totals and stale-result clearing. Clock tests and focused lint passed. Real provider availability and model accuracy were not verified.
+
+## v20 — Source Transparency & SOS Receipt Times
+
+- Removed bandwidth mask UI, capacity-scenario/interpolation modules and their feature-specific checks. Historical source data and past release notes are retained; v19 remains the recovery copy.
+- Added server receipt date/time (Myanmar time, seconds) to SOS incident rows and selected-incident details; missing/ambiguous times stay unavailable.
+- Added source counts, observation/query periods and retrieval clocks for GEE, USGS and JTWC, carried into analysis JSON exports. Overlapping rainfall windows are not double-counted; tower sampling is not represented as independent sensor observations.
+- Raised GSMaP latest-image age tolerance from 48 to 73 hours. Data over 48 hours is explicitly delayed; accumulation periods and completeness validation are unchanged.
+- Replaced stepped saturated hazard colors with a muted continuous fixed scale. Scores, thresholds and model artifacts are unchanged.
+- Made hypothetical outage/population consequences optional, off by default, rather than automatically treating high scores as current failures.
+- Added earthquake/cyclone zero-event reference scores and signed model-input changes. Removed the invented earthquake observation timestamp when no event time exists.
+- Added reproducible offline model sensitivity results and explicit limits on accuracy/bias claims. 264 Python tests and a four-hazard full-app smoke check passed at release verification.
+
+## v19 — Classic Towers & Live SOS Clock
+
+- Restored compact, semi-transparent blue tower points, detailed hover metadata, study-area boundaries, gap markers and ranked suggested sites in Overview.
+- Corrected Overview to plot the selected area's towers instead of the full inventory. The fixed 2,500-point display sample is disclosed; calculations retain the selected inventory.
+- Restored the separate bandwidth evidence button and the existing collected-measurement, full-AOI estimate, planning-scenario and manual-upload views. The v18 distance-only Mbps overlay is no longer the Overview entry point.
+- Added a prominent upper-right resident SOS clock: explicit Myanmar time, seconds, local date, timezone label, immediate display and refresh on return to the page. It is a device clock, not a server-synchronized emergency timestamp.
+- Moved the five-second Streamlit fragment timer onto the incident feed, where Locate/Acknowledge/Resolve actions run.
+- Added static clock serving, no-store resident HTML, targeted API/map/timer tests, a deterministic clock test and a Streamlit UI smoke test. Ignored local SOS databases in Git.
+- Preserved datasets, model artifacts and existing SOS endpoints. Documented unresolved deployment and model limitations in PROJECT_REVIEW_V19.md.
+
+## v14 — Full AOI Estimates
+
+- Added an explicit estimated map filling all selected project polygons with a 500 m or 1000 m grid, independent of population-pixel availability.
+- Added a button from collected measurements that carries the selected quarter and minimum-test filter into the new view.
+- Uses inverse-distance-squared weighting of up to eight nearby source tile averages. Original observations, counts and model artifacts remain unchanged.
+- Added source-distance coloring, interpolation/extrapolation flags, area-weighted summaries, a spatial holdout comparison and separately labelled CSV/GeoJSON exports with source attribution.
+- Default Q2/minimum-three validation has 20.1 Mbps tile-mean MAE versus 17.1 Mbps for a simple mean baseline. The UI warns prominently that this is an illustration, not validated coverage.
+
+## v13 — Collected Mobile Measurements
+
+- Integrated the January–June 2026 Ookla mobile dataset as a separate default bandwidth evidence view, retaining original tile geometry, periods, speeds and counts.
+- Added quarter and minimum-test filters, source/license attribution, sample-weighted summaries, boundary warnings and filtered CSV/GeoJSON downloads with notes.
+- Kept low-sample exclusions gray and unsampled areas uncolored. No interpolation, technology inference or automatic scenario calibration is applied.
+- Added local integrity/schema validation and unit, map, export and Streamlit regression checks. The reader does not require an API key, GEE, rasterio or a new runtime dependency.
+- Preserved existing scenario, manual upload, hazard models and startup behavior. No model was retrained and no accuracy claim is made.
+
 ## v8 — Clear Results & UI Update
 
 - Reorganized hazard results around the exposure map, a three-site engineering-review shortlist, and a compact review queue. Detailed model statistics, distributions and source notes use expandable sections.

@@ -6,6 +6,9 @@ from typing import Any
 
 import pandas as pd
 
+from utils.live_assessment import assessment_state, unassessed_frame
+from utils.source_evidence import source_evidence_record
+
 SCORE_INTERPRETATION = (
     "Proxy-trained exposure planning score (raw 0–1; displayed 0–100), not a disaster probability, "
     "predicted tower failure, or measured outage."
@@ -93,17 +96,20 @@ def _source_context(
     )
     has_missing = any(parsed_values[key] is None for key in recorded_values)
     timestamp_status = "not_recorded" if not timestamps else ("partly_recorded" if has_missing else "recorded")
+    assessment = assessment_state(hazard_type, info, requested_mode)
     return {
         "hazard_type": hazard_type,
         "evidence_status": status,
-        "evidence_label": EVIDENCE_LABELS[status],
+        "evidence_label": assessment["label"] if not assessment["score_allowed"] else EVIDENCE_LABELS[status],
         "source": source,
         "data_timestamps": timestamps,
         "timestamp_label": "Recorded event/product time (not a fetch-time guarantee)",
         "timestamp_status": timestamp_status,
         "source_checked_at": _timestamp(info.get("source_checked_at")),
         "data_status": info.get("data_status") if info.get("data_status") in {"active", "no_active_storm", "background_only"} else "",
-        "message": _SUMMARIES[status],
+        "message": assessment["reason"] if status == "live" and not assessment["score_allowed"] else _SUMMARIES[status],
+        "retrieval": source_evidence_record(hazard_type, info),
+        "assessment": assessment,
     }
 
 
@@ -172,13 +178,15 @@ def build_result_context(
     completion = _timestamp(completed_at)
     if completed_at is not None and completion is None:
         raise ValueError("completed_at must be a valid timestamp")
+    assessment = assessment_state(hazard_type, run_info, requested_mode)
     return {
         "schema_version": 1,
         "hazard_type": hazard_type,
         "requested_mode": requested_mode,
         "evidence_status": status,
-        "evidence_label": EVIDENCE_LABELS[status],
-        "evidence_summary": _SUMMARIES[status],
+        "evidence_label": assessment["label"] if not assessment["score_allowed"] else EVIDENCE_LABELS[status],
+        "evidence_summary": assessment["reason"] if not assessment["score_allowed"] else _SUMMARIES[status],
+        "assessment": assessment,
         "completed_at": completion,
         "sources": [source["source"] for source in source_records],
         "source_timestamps": [
@@ -196,12 +204,16 @@ def build_result_context(
 
 def annotate_result_exports(frame: pd.DataFrame, context: Mapping[str, Any]) -> pd.DataFrame:
     """Keep evidence and interpretation attached when a result leaves the UI."""
-    out = frame.copy()
+    state = context.get("assessment", {})
+    out = unassessed_frame(frame, context.get("hazard_type", ""), state) if state and not state["score_allowed"] else frame.copy()
     out["analysis_source_mode"] = context["requested_mode"]
     out["evidence_status"] = context["evidence_status"]
     out["score_interpretation"] = context["score_interpretation"]
     out["hazard_score_scale"] = "0–1 (multiply by 100 for display)"
     out["analysis_completed_at"] = context.get("completed_at") or ""
+    if "assessment" in context:
+        out["assessment_status"] = context["assessment"]["status"]
+        out["assessment_reason"] = context["assessment"]["reason"]
     out["population_reference_year"] = context["population_reference_year"]
     for kind, child in context.get("submodels", {}).items():
         out[f"{kind}_evidence_status"] = child["evidence_status"]

@@ -370,6 +370,10 @@ class JTWCClient:
         """Return non-stale current/forecast points, or an empty frame when none exist."""
         current_time = _as_utc_timestamp(now)
         urls, source_metadata = self._candidate_urls(current_time)
+        source_metadata.update({
+            "products_requested": len(urls), "products_retrieved": 0,
+            "products_used": 0, "basins": list(self.basins),
+        })
         if not urls:
             empty = _empty_track()
             empty.attrs["source_metadata"] = source_metadata
@@ -407,6 +411,8 @@ class JTWCClient:
                 raise RuntimeError("JTWC source returned no valid official forecast records")
             raise RuntimeError("JTWC source advertised only stale or future-dated forecast products; current storm status is unknown")
         track = pd.concat(active, ignore_index=True)
+        source_metadata["products_retrieved"] = fetched_count
+        source_metadata["products_used"] = len(active)
         latest_cycle = track.groupby("storm_id")["advisory_time"].transform("max")
         result = (
             track[track["advisory_time"] == latest_cycle]
@@ -462,6 +468,9 @@ class JTWCClient:
             "active_storm_count": int(track["storm_id"].nunique()) if not track.empty else 0,
             "track_points": len(track),
             "forecast_track": self._forecast_track_metadata(track),
+            "forecast_max_hours": int(track["forecast_hour"].max()) if not track.empty else 0,
+            "advisory_start": _as_utc_timestamp(track["advisory_time"].min()).isoformat() if not track.empty else "",
+            "advisory_end": _as_utc_timestamp(track["advisory_time"].max()).isoformat() if not track.empty else "",
             **dict(track.attrs.get("source_metadata", {})),
         }
         if track.empty:

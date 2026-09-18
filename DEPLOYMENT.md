@@ -9,6 +9,8 @@
 
 ## Earth Engine service account
 
+The **Collected mobile measurements** and **Estimated full AOI** views are independent of Earth Engine. Include the entire `data/mobile_performance/` folder and all `engine/` and `ui/` modules when deploying v14. Its local CSV and integrity registry are required; do not paste these aggregates into the individual-test uploader. No new Streamlit secret or runtime dependency is needed for these views. The dataset is historical, not a live API. Source and derived data carry CC BY-NC-SA 4.0 conditions; retain attribution and license files when sharing. See `MOBILE_MEASUREMENTS.md` and `FULL_AOI_ESTIMATES.md`. Reboot the hosted app after replacing the project files.
+
 Create a Google Cloud service account, enable the Earth Engine API for its project, register/authorize it for Earth Engine, and grant only the permissions needed to read the referenced public datasets.
 
 In Streamlit Cloud, open **App settings → Secrets** and add:

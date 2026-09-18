@@ -21,6 +21,8 @@ def build_scenario_report(
     threshold: float,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Keep scenario assumptions and evidence attached to every exported row."""
+    if not context.get("assessment", {}).get("score_allowed", False):
+        raise ValueError("Population impact is not assessed without usable model inputs")
     if not np.isfinite(radius_km) or radius_km <= 0 or not 0 <= threshold <= 1:
         raise ValueError("Scenario radius and threshold must be valid finite values")
     if frame.empty or "impact_status" not in frame or not frame["impact_status"].eq("coverage_scenario").all():
@@ -56,10 +58,11 @@ def build_scenario_report(
     exported["unassessed_towers_assumed_available"] = True
     exported["scenario_interpretation"] = "What-if geographic coverage; not observed outages or affected people"
     report = {
-        "report_version": "GeoVision v8",
+        "report_version": "GeoVision v21",
         "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
         "result_context": dict(context),
         "scenario": {
+            "enabled": True,
             "areas": list(areas), "service_radius_km": float(radius_km),
             "tower_unavailable_at_score_0_to_1": float(threshold),
             "unassessed_towers_assumed_available": True,

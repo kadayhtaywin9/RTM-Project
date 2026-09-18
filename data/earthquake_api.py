@@ -74,7 +74,14 @@ def _fetch_geojson(bounds: tuple[float, float, float, float], days: int, min_mag
             payload = json.loads(response.read().decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("USGS returned an invalid JSON response") from exc
-    return validate_usgs_geojson(payload)
+    validated = validate_usgs_geojson(payload)
+    validated["_query_evidence"] = {
+        "query_start": params["starttime"], "query_end": params["endtime"],
+        "retrieved_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        "query_bounds": list(bounds), "query_limit": params["limit"],
+        "minimum_magnitude": float(min_magnitude), "cache_ttl_seconds": 300,
+    }
+    return validated
 
 
 def _haversine(lat: np.ndarray, lon: np.ndarray, event_lat: float, event_lon: float) -> np.ndarray:
@@ -116,6 +123,7 @@ class EarthquakeClient:
         strongest: dict = {"magnitude": None, "place": "", "time": ""}
         accepted_event_count = 0
         ignored_event_count = 0
+        events = []
         for feature in payload["features"]:
             if not isinstance(feature, Mapping) or feature.get("type") != "Feature":
                 raise RuntimeError("USGS catalog contains a malformed event feature")
@@ -147,6 +155,13 @@ class EarthquakeClient:
             ):
                 raise RuntimeError("USGS earthquake contains non-finite or out-of-range fields")
             accepted_event_count += 1
+            event_time = pd.to_datetime(props.get("time"), unit="ms", utc=True, errors="coerce")
+            event_time_text = "" if pd.isna(event_time) else event_time.isoformat()
+            events.append({
+                "event_id": str(feature.get("id") or ""), "magnitude": magnitude,
+                "depth_km": raw_depth, "time": event_time_text,
+                "place": str(props.get("place") or ""),
+            })
             depth = max(raw_depth, 0.0)
             distance = _haversine(lat, lon, event_lat, event_lon)
             intensity = np.clip(1.35 * np.clip((magnitude - 3.0) / 4.0, 0, 1) * np.exp(-depth / 180.0) * np.exp(-distance / 260.0), 0, 1)
@@ -179,4 +194,13 @@ class EarthquakeClient:
             "window_days": days,
             **strongest,
             "source": "USGS FDSN Earthquake Catalog",
+            "source_evidence": {
+                "provider": "USGS", "retrieved_records": len(payload["features"]),
+                "accepted_events": accepted_event_count, "ignored_records": ignored_event_count,
+                "window_days": int(days), "minimum_magnitude": float(min_magnitude),
+                **dict(payload.get("_query_evidence", {})),
+                "query_bounds": list(bounds),
+                "possible_truncation": len(payload["features"]) >= 2000,
+                "events": events,
+            },
         }

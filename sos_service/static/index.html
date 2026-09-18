@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#07111f" />
+  <title>GeoVision SOS</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #07111f; color: #f7fbff; }
+    body { min-height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; }
+    header { padding: 16px 18px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .brand { font-weight: 850; letter-spacing: .01em; }
+    .brand span { color: #7dd3fc; }
+    .gps { font-size: 12px; color: #b9c8da; }
+    .header-status { margin-left: auto; text-align: right; flex-shrink: 0; }
+    .clock-block { display: grid; justify-items: end; gap: 2px; }
+    #clock { font-size: clamp(22px, 4vw, 28px); line-height: 1.15; font-weight: 700; color: #f7fbff; font-variant-numeric: tabular-nums; letter-spacing: .035em; }
+    #date { font-size: 12px; color: #cbd5e1; }
+    .clock-zone { font-size: 10px; color: #7dd3fc; letter-spacing: .06em; }
+    #gpsText { margin-top: 5px; }
+    @media (max-width: 380px) { header { padding: 12px; gap: 8px; } .brand { font-size: 14px; } }
+    main { min-height: 0; padding: 0 12px; }
+    #map { width: 100%; height: 100%; min-height: 52dvh; border: 1px solid rgba(148,180,224,.22); border-radius: 20px; overflow: hidden; background: #0b1b2f; }
+    .controls { padding: 14px 12px calc(18px + env(safe-area-inset-bottom)); }
+    #sosButton { width: 100%; min-height: 78px; border: 0; border-radius: 20px; background: linear-gradient(180deg,#ff3b50,#d90828); color: white; font-size: clamp(24px, 7vw, 34px); font-weight: 900; letter-spacing: .03em; box-shadow: 0 16px 38px rgba(217,8,40,.35); cursor: pointer; }
+    #sosButton:disabled { opacity: .48; cursor: not-allowed; box-shadow: none; }
+    #status { min-height: 21px; margin: 10px 4px 0; text-align: center; color: #b9c8da; font-size: 13px; }
+    #status.ok { color: #86efac; }
+    #status.error { color: #fda4af; }
+    .leaflet-control-attribution { font-size: 9px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">GeoVision <span>SOS</span></div>
+    <div class="header-status">
+      <div class="clock-block" role="timer" aria-label="Myanmar time" aria-live="off" title="Device clock displayed in Myanmar time. SOS receipt timestamps are recorded by the server.">
+        <time id="clock">--:--:--</time>
+        <time id="date">Starting clock…</time>
+        <span class="clock-zone">MMT · UTC+06:30</span>
+      </div>
+      <div id="gpsText" class="gps">Finding your location…</div>
+    </div>
+  </header>
+  <main><div id="map" aria-label="Current location map"></div></main>
+  <section class="controls">
+    <button id="sosButton" type="button" disabled>🚨 SEND SOS</button>
+    <audio id="sosSound" preload="auto"><source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=" type="audio/wav"></audio>
+    <div id="status">Allow location access to enable SOS.</div>
+  </section>
+
+  <!-- Start the clock before the map JavaScript and GPS initialization. -->
+  <script src="/static/sos-clock.js?v=19"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    const button = document.getElementById('sosButton');
+    const statusEl = document.getElementById('status');
+    const gpsText = document.getElementById('gpsText');
+    const sosSound = document.getElementById('sosSound');
+    let latest = null;
+    let marker = null;
+    let accuracyCircle = null;
+
+    const map = L.map('map', { zoomControl: true }).setView([16.8661, 96.1951], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    function setStatus(text, cls='') {
+      statusEl.textContent = text;
+      statusEl.className = cls;
+    }
+
+    function updatePosition(position) {
+      const { latitude, longitude, accuracy } = position.coords;
+      latest = { latitude, longitude, accuracy_m: accuracy, client_time: new Date().toISOString() };
+      gpsText.textContent = `GPS ±${Math.round(accuracy)} m`;
+      button.disabled = false;
+      setStatus('Location ready. Press SOS only for a real emergency.');
+
+      if (!marker) {
+        marker = L.circleMarker([latitude, longitude], {
+          radius: 10, weight: 3, color: '#ffffff', fillColor: '#2563eb', fillOpacity: 1
+        }).addTo(map).bindTooltip('Your current location');
+        accuracyCircle = L.circle([latitude, longitude], {
+          radius: accuracy, weight: 1, color: '#2563eb', fillOpacity: 0.08
+        }).addTo(map);
+        map.setView([latitude, longitude], 16);
+      } else {
+        marker.setLatLng([latitude, longitude]);
+        accuracyCircle.setLatLng([latitude, longitude]).setRadius(accuracy);
+      }
+    }
+
+    function locationError(error) {
+      button.disabled = true;
+      gpsText.textContent = 'Location unavailable';
+      const message = error.code === 1
+        ? 'Location permission is required to send an SOS.'
+        : 'Could not obtain your current location. Check GPS and try again.';
+      setStatus(message, 'error');
+    }
+
+    if ('geolocation' in navigator) {
+      navigator.geolocation.watchPosition(updatePosition, locationError, {
+        enableHighAccuracy: true,
+        maximumAge: 5000,
+        timeout: 15000
+      });
+    } else {
+      locationError({ code: 0 });
+    }
+
+    button.addEventListener('click', async () => {
+      if (!latest) return;
+      button.disabled = true;
+      button.textContent = 'SENDING…';
+      setStatus('Sending your location to GeoVision…');
+      try {
+        const response = await fetch('/api/sos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(latest)
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'SOS request failed');
+        button.textContent = 'SOS SENT';
+        sosSound.play().catch(()=>{});
+        setStatus(`${data.id} received by GeoVision.`, 'ok');
+        setTimeout(() => {
+          button.disabled = false;
+          button.textContent = 'SEND SOS';
+        }, 5000);
+      } catch (err) {
+        button.disabled = false;
+        button.textContent = 'SEND SOS';
+        setStatus(`SOS could not be sent: ${err.message}`, 'error');
+      }
+    });
+  </script>
+</body>
+</html>

@@ -13,7 +13,7 @@ The Flood / Heavy Rain workspace calls Google Earth Engine from the Streamlit ba
 
 Those values are sampled at current tower coordinates. The learned Flood inputs are 30-day rainfall percentile, historical flood score, elevation risk and slope risk. Dynamic World and the shorter rainfall windows are displayed context, not learned inputs. The Cyclone model does not consume live GEE features in this release.
 
-Live rainfall requires a source timestamp no older than 48 hours (and at most one hour ahead of the app clock), all requested tower samples, finite nonnegative cumulative totals, and complete hourly inventories. Each pixel total is also masked unless all 24, 72 or 720 hourly observations are valid. The connector revalidates cached results. Failure raises in Live only and triggers a labelled local fallback in Automatic; missing rain is never silently treated as a live median-rainfall observation.
+v20 accepts a latest rainfall image no older than 73 hours (and at most one hour ahead of the app clock), with a prominent delayed-product warning above 48 hours. The 24-hour, 72-hour and 30-day accumulation periods remain unchanged: 73 hours is an age tolerance, not a new rainfall total. All requested tower samples, finite nonnegative cumulative totals, and complete hourly inventories are still required. Each pixel total is masked unless all 24, 72 or 720 hourly observations are valid. The connector revalidates cached results. Failure raises in Live only and triggers a labelled local fallback in Automatic; missing rain is never silently treated as a live median-rainfall observation. A result accepted at 53.7 hours does not describe rainfall during the following 53.7 hours.
 
 ## 1. Google Cloud / Earth Engine
 
@@ -96,6 +96,8 @@ python ml/train_hazard_xgboost.py
 
 
 ## Multi-hazard data sources
+
+In v21, Live only does not display a score or affected-population estimate without usable source evidence. A missing-hour error is a completeness failure, not an authentication failure and not zero rainfall. Increasing the latest-image freshness tolerance to 73 hours does not supply missing hours. Rerun when complete source imagery is available, or explicitly select historical/demo planning; do not disable completeness checks to obtain a green map.
 
 - Flood / Heavy Rain: Earth Engine `JAXA/GPM_L3/GSMaP/v6/operational` + `USGS/SRTMGL1_003` + `GOOGLE/DYNAMICWORLD/V1` environmental context.
 - Cyclone current position and forecast: public JTWC operational products through the U.S. Naval Research Laboratory ATCF feed. No API key is required.

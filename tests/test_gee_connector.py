@@ -294,7 +294,7 @@ def test_rainfall_validator_preserves_context_and_requested_order() -> None:
 @pytest.mark.parametrize(
     ("timestamp", "message"),
     [
-        ("2026-09-03T23:59:59Z", "stale"),
+        ("2026-09-03T10:59:59Z", "stale"),
         ("2026-09-06T13:01:00Z", "future"),
     ],
 )

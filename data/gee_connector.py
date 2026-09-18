@@ -21,7 +21,8 @@ DYNAMIC_WORLD_SAMPLE_SCALE_METERS = 10
 GSMAP_COLLECTION_ID = "JAXA/GPM_L3/GSMaP/v6/operational"
 GSMAP_BAND = "hourlyPrecipRateGC"
 GSMAP_CACHE_TTL_SECONDS = 900
-GSMAP_MAX_AGE_HOURS = 48.0
+GSMAP_MAX_AGE_HOURS = 73.0
+GSMAP_DELAY_WARNING_HOURS = 48.0
 GSMAP_FUTURE_TOLERANCE_HOURS = 1.0
 GSMAP_WINDOW_HOURS = (24, 72, 24 * 30)
 DYNAMIC_WORLD_PROBABILITY_BANDS = (
@@ -148,7 +149,9 @@ def validate_rainfall_samples(
         raise RuntimeError("GSMaP cumulative rainfall windows are not monotonic")
 
     order = pd.DataFrame({"tower_id": expected_ids.to_numpy()})
-    return order.merge(validated, on="tower_id", how="left", sort=False, validate="one_to_one")
+    result = order.merge(validated, on="tower_id", how="left", sort=False, validate="one_to_one")
+    result.attrs = dict(frame.attrs)
+    return result
 
 
 def validate_gsmap_hourly_coverage(timestamps_ms: Any, latest_ms: Any) -> dict[int, int]:
@@ -360,7 +363,7 @@ def _rainfall_features(records: tuple[tuple[int, float, float], ...], project_id
     end = ee.Date(latest_ms).advance(1, "hour")
     thirty_day = rainfall.filterDate(end.advance(-30, "day"), end)
     hourly_timestamps = thirty_day.aggregate_array("system:time_start").getInfo()
-    validate_gsmap_hourly_coverage(hourly_timestamps, latest_ms)
+    coverage = validate_gsmap_hourly_coverage(hourly_timestamps, latest_ms)
     stack = ee.Image.cat([
         _complete_rainfall_sum(rainfall.filterDate(end.advance(-24, "hour"), end), 24, "rainfall_24h"),
         _complete_rainfall_sum(rainfall.filterDate(end.advance(-72, "hour"), end), 72, "rainfall_72h"),
@@ -374,7 +377,23 @@ def _rainfall_features(records: tuple[tuple[int, float, float], ...], project_id
         tileScale=4,
     )
     timestamp = pd.to_datetime(int(latest_ms), unit="ms", utc=True).isoformat()
-    return _features_to_frame(ee, sampled), timestamp
+    frame = _features_to_frame(ee, sampled)
+    window_end = pd.Timestamp(timestamp) + pd.Timedelta(hours=1)
+    frame.attrs["source_evidence"] = {
+        "provider": "GEE GSMaP", "dataset": GSMAP_COLLECTION_ID,
+        "retrieved_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        "product_time": timestamp,
+        "aggregation_windows_hours": list(GSMAP_WINDOW_HOURS),
+        "hourly_image_counts": {str(hours): count for hours, count in coverage.items()},
+        "unique_hourly_images": coverage[max(GSMAP_WINDOW_HOURS)],
+        "window_start": (window_end - pd.Timedelta(hours=720)).isoformat(),
+        "window_end_exclusive": window_end.isoformat(),
+        "sample_rows": len(frame), "requested_towers": len(records),
+        "sample_scale_m": 10000,
+        "max_age_hours": GSMAP_MAX_AGE_HOURS,
+        "cache_ttl_seconds": GSMAP_CACHE_TTL_SECONDS,
+    }
+    return frame, timestamp
 
 
 class EarthEngineConnector:
@@ -402,4 +421,6 @@ class EarthEngineConnector:
         rainfall, timestamp = self.rainfall_features(towers)
         static["tower_id"] = pd.to_numeric(static["tower_id"], errors="coerce").astype("Int64")
         rainfall["tower_id"] = pd.to_numeric(rainfall["tower_id"], errors="coerce").astype("Int64")
-        return static.merge(rainfall, on="tower_id", how="left", sort=False, validate="one_to_one"), timestamp
+        result = static.merge(rainfall, on="tower_id", how="left", sort=False, validate="one_to_one")
+        result.attrs = dict(rainfall.attrs)
+        return result, timestamp

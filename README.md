@@ -1,8 +1,20 @@
 # GeoVision AI — Multi-Hazard Telecom Resilience Platform
 
-GeoVision AI is a Streamlit planning platform for Yangon telecom coverage and disaster resilience. It preserves the original dashboard while separating external data access, model serving, orchestration, decisions, and UI concerns.
+**v21 — Live Assessment Gates & Restored Population Impact**, based on the delivered v20 project.
 
-This is **v8 — Clear Results & UI Update**. It retains the clean light dashboard, OpenStreetMap maps, and university/team network header, with a map-first hazard workspace, visible evidence labels and scenario-aware exports. See [RELEASE_NOTES_V8.md](RELEASE_NOTES_V8.md) for changes and remaining limitations.
+GeoVision is a research/planning dashboard for Yangon telecom resilience. It is not a calibrated disaster forecast, measured RF coverage system or emergency dispatch service.
+
+## What changed in v21
+
+- All four hazard workspaces distinguish usable live evidence from missing inputs, no-event source checks and historical planning.
+- Missing, incomplete or unverified live evidence shows a gray **Not assessed** map. Scores, rankings and affected-population estimates remain unknown; historical-only values are not used as live results.
+- A successful USGS query with zero qualifying earthquakes, or a verified JTWC index with no qualifying active forecast, shows **No matching events / no qualifying forecast**. It does not produce a background-only live score or imply safety.
+- Compound Risk requires usable assessments from all three components. A no-event/missing component is not replaced by zero or a historical score. Inspect the individual hazards when a combined result is unavailable.
+- **Population impact is visible by default again** for usable live assessments and explicitly labelled historical/demo scenarios. The main cards separately show people initially affected, people losing coverage and people rerouted; assumed tower outages and coverage after the scenario appear below them.
+- Unknown values remain null in CSV/JSON exports. A failed run clears earlier scores and population totals.
+- No models were retrained or rescaled. The 73-hour rainfall freshness policy, completeness checks, muted continuous colors, classic tower points, SOS receipt timestamps and resident clock are retained. Bandwidth masks remain removed.
+
+Read [release notes and launch instructions](RELEASE_NOTES_V21.md). The [v20 model audit](MODEL_HONESTY_V20.md) and [its reproducible output](HAZARD_MODEL_AUDIT_V20.json) remain useful evidence of background bias; their old UI description is superseded by v21. No real-world accuracy or bias-free claim is made.
 
 ## AI systems
 
@@ -26,7 +38,7 @@ The dashboard exposes four hazard workspaces:
 3. Earthquake AI
 4. Compound Risk AI
 
-Each produces a tower score, risk category, recommended action, and native XGBoost TreeSHAP explanation. The dashboard then computes population impact from the selected service radius and tower-unavailability threshold. Earthquake mode estimates tower impact after reported events; it does not predict earthquakes.
+When usable inputs exist, each produces a tower score, risk category, recommended action and native XGBoost TreeSHAP explanation. The dashboard computes a hypothetical population impact from the selected service radius and tower-unavailability threshold. Without a usable assessment these outputs are unknown, not zero. Earthquake mode estimates tower impact after reported events; it does not predict earthquakes.
 
 Population counts are not score-weighted population estimates: initially affected people are split into people rerouted to surviving towers and people losing geographic coverage. All surviving towers are eligible, including those beyond the ten-neighbor acceleration cache. Unassessed towers outside selected analysis areas are assumed available. Counts use the packaged 2020 population baseline, not current population or RF/capacity measurements.
 
@@ -52,7 +64,7 @@ app.py                Streamlit UI, maps, charts, and interaction
 
 Python 3.11 or 3.12 is recommended.
 
-On Windows, extract the **entire ZIP** and double-click `run_windows.bat`. The launcher locates compatible 64-bit Python, creates a project environment when absent, checks all runtime requirements/imports, and installs dependencies if needed. First setup requires internet. Keep its terminal window open while using the app. Setup/server errors remain visible instead of disappearing; existing environments are never silently deleted. If a port is already in use, use the existing app or stop that server before launching another copy.
+On Windows, extract the **entire ZIP** and double-click `run_windows.bat`. The launcher locates compatible 64-bit Python, creates a project environment when absent, checks required runtime requirements/imports, and installs dependencies if needed. Rasterio is an optional runtime capability: a missing or blocked terrain reader gives a warning rather than preventing startup. First setup requires internet. Keep its terminal window open while using the app. Setup/server errors remain visible instead of disappearing; existing environments are never silently deleted. If a port is already in use, use the existing app or stop that server before launching another copy.
 
 Manual setup is also available below. v8 requires Streamlit 1.63 or later within the supported major version, as specified in `requirements.txt`.
 
@@ -79,6 +91,14 @@ streamlit run app.py
 ```
 
 The dashboard remains usable in `Demo data` mode without GEE credentials.
+
+### Windows: Application Control blocked a Rasterio DLL
+
+If the traceback ends in `rasterio._base` with `An Application Control policy has blocked this file`, Windows refused to load a native terrain-library component. That is not a GEE authentication error. v10.1 removes the mandatory startup import. Overview, stored candidate ranking and the local hazard workspaces do not require this reader. Site checks use an existing stored area-candidate elevation proxy only when available, visibly labelled in the warning, metric, model-input table and downloaded report; this is not a fresh terrain sample or an accuracy improvement. If neither a valid sample nor stored terrain feature exists, site scoring is unavailable rather than substituting zero.
+
+After installing this update, stop your old Streamlit process with Ctrl+C, open a terminal in the newly extracted project folder, and run `python -m streamlit run app.py`. No reinstall into Anaconda base or security-setting change is required for this workaround. The blocked terrain reader remains blocked. A failure is cached until process restart.
+
+To investigate the blocked component, ask your device administrator to inspect **Event Viewer → Applications and Services Logs → Microsoft → Windows → CodeIntegrity → Operational**, including event 3077 and associated 3089 signature events. Use your organization's approved software/policy process; do not disable Windows protection. See [Microsoft's Application Control troubleshooting guidance](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/operations/appcontrol-debugging-and-troubleshooting).
 
 ## Google Earth Engine
 
@@ -120,7 +140,7 @@ JTWC supplies the current/forecast event signal only. The bundled Cyclone AI is 
 
 - SRTM elevation/slope use the permanent data cache.
 - Dynamic World land cover uses a refreshed confidence-filtered recent composite.
-- GSMaP rainfall is cached for 15 minutes and revalidated on return. The app requires a source timestamp no older than 48 hours, complete hourly image inventories, and complete valid pixel observations for each 24/72/720-hour window.
+- GSMaP rainfall is cached for 15 minutes and revalidated on return. The app requires a source timestamp no older than 73 hours (products over 48 hours are labelled delayed), complete hourly image inventories, and complete valid pixel observations for each 24/72/720-hour window.
 - JTWC public forecast products use a short-lived cache and freshness validation.
 - USGS events are cached for 5 minutes.
 - XGBoost models and the hazard engine use the resource cache.
@@ -148,3 +168,9 @@ The updated earthquake/cyclone/compound artifacts and metadata must be deployed 
 ## Deployment
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for Streamlit Community Cloud configuration, secrets, health checks, and release guidance.
+
+## Resident SOS prototype
+
+This release includes a separate resident-facing SOS service in `sos_service/` and an **SOS Emergency** workspace in the Streamlit dashboard. See `SOS_FEATURE.md` for architecture, setup, limitations and deployment notes.
+
+Run the SOS service with `run_sos_windows.bat` on Windows or `./run_sos_mac_linux.sh` on macOS/Linux, then run the normal dashboard separately.

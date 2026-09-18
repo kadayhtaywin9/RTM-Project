@@ -6,6 +6,7 @@ consistent with those training features for an arbitrary latitude/longitude.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import math
 from functools import lru_cache
@@ -15,7 +16,6 @@ from typing import Any
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import rasterio
 import xgboost as xgb
 from pyproj import Transformer
 from shapely.geometry import Point
@@ -45,6 +45,19 @@ FEATURE_LABELS = {
 
 EARTH_RADIUS_KM = 6371.0088
 GAP_NORMALIZATION_KM = 25.0  # matches the candidate feature construction used by the project
+
+
+@lru_cache(maxsize=1)
+def _rasterio_runtime():
+    """Optional terrain reader; an OS-blocked DLL must not prevent app startup.
+
+    Cache failures until process restart rather than retrying a blocked binary on
+    every Streamlit rerun. Never change Windows policy or load another DLL path.
+    """
+    try:
+        return importlib.import_module("rasterio")
+    except (ImportError, OSError):
+        return None
 
 
 @lru_cache(maxsize=1)
@@ -143,6 +156,9 @@ def _area_proxy_candidate(lat: float, lon: float, adm4_row: pd.Series, assets: d
 
 
 def _sample_elevation(lat: float, lon: float) -> float | None:
+    rasterio = _rasterio_runtime()
+    if rasterio is None:
+        return None
     path = DATA / "yangon_elevation.tif"
     try:
         with rasterio.open(path) as src:
@@ -150,13 +166,20 @@ def _sample_elevation(lat: float, lon: float) -> float | None:
             if src.crs and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
                 transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
                 x, y = transformer.transform(x, y)
-            val = float(next(src.sample([(x, y)]))[0])
+            # Unmasked sampling can return zero outside the raster when nodata
+            # is unset. That is unknown terrain, not a sea-level observation.
+            if not (src.bounds.left <= x < src.bounds.right and src.bounds.bottom < y <= src.bounds.top):
+                return None
+            sample = next(src.sample([(x, y)], masked=True))[0]
+            if np.ma.is_masked(sample):
+                return None
+            val = float(sample)
             if src.nodata is not None and math.isclose(val, float(src.nodata), rel_tol=0.0, abs_tol=1e-9):
                 return None
             if not np.isfinite(val):
                 return None
             return val
-    except (OSError, StopIteration, ValueError, rasterio.errors.RasterioError):
+    except (ImportError, OSError, StopIteration, ValueError, rasterio.errors.RasterioError):
         return None
 
 
@@ -195,16 +218,36 @@ def extract_site_features(lat: float, lon: float) -> dict[str, Any]:
     population_score = float(np.clip(np.log1p(max(population_2020, 0.0)) / np.log1p(max_pop), 0.0, 1.0))
 
     elevation_m = _sample_elevation(lat, lon)
-    elevation_source = "exact GeoTIFF sample"
+    elevation_is_proxy = elevation_m is None
+    elevation_source = "GeoTIFF pixel sampled at the selected coordinate (not a field measurement)"
+    terrain_warning = None
     if elevation_m is None:
         elevation_m = float(proxy.get("elevation_m", np.nan))
-        elevation_source = "Admin-4 candidate proxy (raster sample unavailable)"
+        elevation_source = "Stored area-candidate proxy; selected-coordinate terrain sample unavailable"
+        terrain_warning = (
+            "Terrain sampling is unavailable. This site score uses a stored area-candidate "
+            "elevation proxy, not elevation sampled at the selected coordinate. "
+            "Treat it as coarse planning guidance only."
+        )
+        if _rasterio_runtime() is None:
+            terrain_warning += (
+                " Rasterio could not load (missing dependency, DLL failure or OS policy). "
+                "Other dashboard features can still run. If Windows reports an Application "
+                "Control block, ask your administrator to review it; do not disable protection."
+            )
     elev_min = float(assets["candidates"]["elevation_m"].min())
     elev_max = float(assets["candidates"]["elevation_m"].max())
     if np.isfinite(elevation_m) and elev_max > elev_min:
         elevation_score = float(np.clip((elevation_m - elev_min) / (elev_max - elev_min), 0.0, 1.0))
     else:
-        elevation_score = float(np.clip(proxy.get("elevation_score", 0.0), 0.0, 1.0))
+        elevation_score = float(proxy.get("elevation_score", np.nan))
+        if not np.isfinite(elevation_score) or not 0 <= elevation_score <= 1:
+            return {
+                "ok": False,
+                "reason": "Site scoring is unavailable: neither a usable terrain sample nor a valid stored elevation feature is available. Missing terrain is not treated as zero.",
+                "lat": lat,
+                "lon": lon,
+            }
 
     feature_values = {
         "gap_score": float(np.clip(nearest_tower_km / GAP_NORMALIZATION_KM, 0.0, 1.0)),
@@ -231,6 +274,8 @@ def extract_site_features(lat: float, lon: float) -> dict[str, Any]:
         "nearest_tower_cell_count": int(nearest_tower.get("cell_count", 0)),
         "elevation_m": float(elevation_m) if np.isfinite(elevation_m) else None,
         "elevation_source": elevation_source,
+        "elevation_is_proxy": elevation_is_proxy,
+        "terrain_warning": terrain_warning,
         "earthquake_score_proxy": float(proxy.get("earthquake_score", np.nan)),
         "cyclone_score_proxy": float(proxy.get("cyclone_score", np.nan)),
         "flood_score_proxy": float(proxy.get("flood_score", np.nan)),
@@ -241,7 +286,7 @@ def extract_site_features(lat: float, lon: float) -> dict[str, Any]:
             "population_score": "Containing Admin-4 WorldPop 2020 total",
             "is_rural": "Containing Admin-4 planning classification",
             "safety_score": "Containing Admin-4 hazard-safety proxy",
-            "elevation_score": f"Clicked coordinate elevation; {elevation_source}",
+            "elevation_score": elevation_source,
         },
     }
 

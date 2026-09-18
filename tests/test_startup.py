@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import check_runtime
 from scripts.check_runtime import requirement_errors
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,44 @@ def test_requirement_check_enforces_upper_bound_and_environment_markers() -> Non
     assert requirement_errors("numpy>=1.26,<3", lambda _: "3.0.0")
     assert requirement_errors("numpy>=1.26,<3", lambda _: "2.5.2") == []
     assert requirement_errors("unavailable>=1; python_version < '2'", lambda _: "0") == []
+
+
+def test_runtime_may_skip_only_explicit_optional_requirements():
+    def missing(_):
+        raise metadata.PackageNotFoundError
+
+    errors = requirement_errors("rasterio>=1.3,<2\nnumpy>=1.26,<3", missing, skip_packages=frozenset({"rasterio"}))
+    assert len(errors) == 1 and "numpy" in errors[0]
+    assert requirement_errors("rasterio>=1.3,<2", missing)  # strict default retained
+
+
+@pytest.mark.parametrize("failure", [ImportError("Application Control block"), OSError("DLL failure")])
+def test_launcher_check_allows_blocked_optional_terrain(monkeypatch, capsys, failure):
+    monkeypatch.setattr(check_runtime, "requirement_errors", lambda *args, **kwargs: [])
+    monkeypatch.setattr(check_runtime.sys, "version_info", (3, 12, 0))
+
+    def importing(name):
+        if name == "rasterio":
+            raise failure
+
+    monkeypatch.setattr(check_runtime.importlib, "import_module", importing)
+    assert check_runtime.main() == 0
+    output = capsys.readouterr().out
+    assert "Optional rasterio could not load" in output
+    assert "Do not disable protection" in output
+
+
+def test_core_dll_failure_remains_fatal(monkeypatch, capsys):
+    monkeypatch.setattr(check_runtime, "requirement_errors", lambda *args, **kwargs: [])
+    monkeypatch.setattr(check_runtime.sys, "version_info", (3, 12, 0))
+
+    def importing(name):
+        if name == "numpy":
+            raise ImportError("Core DLL failure")
+
+    monkeypatch.setattr(check_runtime.importlib, "import_module", importing)
+    assert check_runtime.main() == 1
+    assert "Runtime imports failed: numpy" in capsys.readouterr().out
 
 
 def _stub_launcher(
