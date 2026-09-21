@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from ui.cesium_map import render_map
 from engine.decision_engine import attach_coverage_scenario
 from ui.source_evidence import render_source_evidence
 from utils.live_assessment import unassessed_frame
@@ -62,7 +63,7 @@ def _exposure_map(hz, hazard_type, selected_areas, run_info, base_map, add_track
     ])
     fig.add_trace(go.Scattermap(
         lat=hz.lat, lon=hz.lon, mode="markers",
-        marker={"size": np.where(hz.assumed_unavailable.fillna(False), 7, 5), "opacity": .68,
+        marker={"size": np.where(hz.assumed_unavailable.fillna(False), 8, 6), "opacity": 1.0,
                 "color": hz.hazard_ai_score * 100, "cmin": 0, "cmax": 100,
                 "colorscale": EXPOSURE_COLORSCALE, "showscale": True,
                 "colorbar": {"title": {"text": "Exposure<br>0–100"}, "thickness": 10, "len": .65}},
@@ -103,7 +104,7 @@ def _render_unassessed(result, context, hazard_type, selected_areas, base_map, m
     for column, label in zip(st.columns(3), ("Affected people", "Coverage loss", "Rerouted"), strict=True):
         column.metric(label, "Not assessed")
     st.markdown("#### Assessment map")
-    st.plotly_chart(_unassessed_map(hz, selected_areas, base_map), width="stretch", config=map_config, key=f"hazard_unassessed_map_{hazard_type}")
+    render_map(_unassessed_map(hz, selected_areas, base_map), width="stretch", config=map_config, key=f"hazard_unassessed_map_{hazard_type}")
     st.caption("Gray: not assessed")
     exported = annotate_result_exports(hz, context)
     report = {
@@ -164,7 +165,7 @@ def render_hazard_results(
     map_column, review_column = st.columns([2.1, 1], gap="large")
     with map_column:
         st.markdown("#### Exposure map")
-        st.plotly_chart(_exposure_map(hz, hazard_type, selected_areas, run_info, base_map, add_track, scenario_enabled), width="stretch", config=map_config, key=f"hazard_exposure_map_{hazard_type}")
+        render_map(_exposure_map(hz, hazard_type, selected_areas, run_info, base_map, add_track, scenario_enabled), width="stretch", config=map_config, key=f"hazard_exposure_map_{hazard_type}")
         st.caption(f"{len(hz):,} towers · exposure 0–100")
     with review_column:
         st.markdown("#### Priority towers")

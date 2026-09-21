@@ -6,8 +6,8 @@ Hazard modes:
 - cyclone: keyless JTWC current/forecast track context + project historical cyclone exposure
 - compound: learned meta-model over flood, earthquake and cyclone AI scores
 
-All current outputs are hackathon/MVP *exposure/impact scores*, not calibrated
-physical probabilities. See model cards/metadata in models/.
+Outputs are planning exposure scores, not calibrated physical probabilities.
+Training inputs and limitations are recorded in models/ metadata.
 """
 from __future__ import annotations
 

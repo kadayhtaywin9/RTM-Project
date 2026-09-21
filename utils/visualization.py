@@ -4,16 +4,16 @@ from __future__ import annotations
 import pandas as pd
 
 RISK_COLORS = {
-    "Low": "#77a992",
-    "Moderate": "#c8bb83",
-    "High": "#cd9777",
-    "Very High": "#b96570",
+    "Low": "#38bdf8",
+    "Moderate": "#fde047",
+    "High": "#f97316",
+    "Very High": "#ef4444",
 }
 
 # Continuous fixed scale. No abrupt class boundaries or per-selection rescaling.
 EXPOSURE_COLORSCALE = [
-    [0.0, "#77a992"], [0.25, "#a6b58c"], [0.5, "#d3be88"],
-    [0.75, "#cd9777"], [1.0, "#b96570"],
+    [0.0, "#2563eb"], [0.30, "#38bdf8"], [0.50, "#fde047"],
+    [0.70, "#f97316"], [1.0, "#ef4444"],
 ]
 
 

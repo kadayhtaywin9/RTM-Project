@@ -16,23 +16,16 @@ from engine.hazard_engine import get_hazard_engine
 from hazard_ai import hazard_model_status
 from site_ai import assess_site, model_status, recommend_sites_xgb
 from ui.hazard_results import render_hazard_results
+from ui.cesium_map import render_map
 from utils.live_assessment import assessment_state, unassessed_frame
 from utils.sos import (
     enrich_sos_incident,
     fetch_sos_incidents,
+    project_sos_scope,
     sos_received_time,
     update_sos_status,
 )
 from utils.study_areas import ANALYSIS_AREAS, AREA_ID, AREA_TOWNSHIPS, TOWNSHIP_TO_AREA
-
-try:
-    import folium
-    from streamlit_folium import st_folium
-    HAS_CLICK_MAP = True
-except ImportError:
-    folium = None
-    st_folium = None
-    HAS_CLICK_MAP = False
 
 from geoai_engine import (
     coverage_summary,
@@ -990,8 +983,19 @@ def inject_global_styles():
         }
         .gv-hero h1 { margin: 0; padding: 0; font-size: 1.65rem; }
         .gv-hero-meta { margin: 0; font-weight: 500; }
-        .gv-campus-header { min-height: 58px; padding: 0.45rem 0.85rem; }
-        .gv-campus-logo, .gv-campus-logo-fallback { width: 38px; height: 38px; flex-basis: 38px; }
+        .gv-campus-header { min-height: 116px; padding: 1.1rem 1.4rem; }
+        .gv-campus-brand { max-width: 80%; gap: 1.1rem; }
+        .gv-campus-logo, .gv-campus-logo-fallback { width: 76px; height: 76px; flex-basis: 76px; }
+        .gv-campus-name { font-size: clamp(1.05rem, 1.65vw, 1.45rem); line-height: 1.35; }
+        .gv-campus-team { font-size: 1.1rem; margin-top: 0.35rem; font-weight: 600; }
+        @media (max-width: 720px) {
+            .gv-campus-header { min-height: 104px; padding: 0.9rem 1rem; }
+            .gv-campus-brand { max-width: 100%; gap: 0.8rem; }
+            .gv-campus-logo, .gv-campus-logo-fallback { width: 60px; height: 60px; flex-basis: 60px; }
+            .gv-campus-name { font-size: 1rem; }
+            .gv-campus-team { font-size: 0.95rem; }
+            .gv-campus-network { opacity: 0.2; }
+        }
         .gv-kpi { min-height: 82px; padding: 0.65rem 0.8rem; box-shadow: none; }
         .gv-kpi-value { font-size: clamp(1.25rem, 2vw, 1.8rem); }
         .gv-evidence {
@@ -1493,7 +1497,7 @@ def _ai_report_text(a):
     lines.extend([
         "",
         "Important limitation:",
-        a.get("model_warning", "Prototype model."),
+        a.get("model_warning", "Planning model."),
         "Population, rural classification and safety are area-level proxies; tower gap is evaluated at the selected coordinate. Elevation provenance is recorded above.",
         a.get("terrain_warning") or "Terrain sample availability does not establish RF or engineering accuracy.",
         "This is a planning-screening result, not final RF, structural, land, permitting, power or backhaul approval.",
@@ -1587,32 +1591,25 @@ def render_ai_assessment(a, key_prefix="ai", technical_only=False):
             key=f"{key_prefix}_download_ai_report",
         )
         st.caption(
-            "Prototype limitation: the trained model uses planning proxies and pseudo-labels. Use it for screening and prioritization, not final engineering approval."
+            "Planning proxies and pseudo-labels; site suitability requires engineering validation."
         )
 
 
 def build_ai_click_map(selected_areas, selected_point=None):
-    if not HAS_CLICK_MAP:
-        return None
-    towns = expand_areas(selected_areas)
-    boundary = filter_geojson(admin3_geo, "adm3_name", towns)
-    source = candidates_all[candidates_all.adm3_name.isin(towns)]
-    center = map_center(source)
-    zoom = 9 if len(selected_areas) == 1 else 8
-    m = folium.Map(location=[center["lat"], center["lon"]], zoom_start=zoom, tiles="OpenStreetMap", control_scale=True)
-    if boundary.get("features"):
-        folium.GeoJson(
-            boundary,
-            name="Study area boundary",
-            style_function=lambda _: {
-                "color": "#2457C5", "weight": 2, "fillColor": "#4C78FF", "fillOpacity": 0.06,
-            },
-        ).add_to(m)
+    fig = base_map(selected_areas, zoom=9 if len(selected_areas) == 1 else 8.5)
     if selected_point:
         lat, lon = selected_point
-        folium.Marker([lat, lon], tooltip="Selected location").add_to(m)
-    folium.LatLngPopup().add_to(m)
-    return m
+        fig.add_trace(go.Scattermap(lat=[lat], lon=[lon], mode="markers",
+                                   marker={"size": 13, "color": "#2dd4bf"}, name="Selected location",
+                                   hovertemplate="Selected location<br>%{lat:.6f}, %{lon:.6f}<extra></extra>"))
+    return fig
+
+
+def apply_site_checker_coordinates():
+    # Button callbacks run before the map is built, keeping its pin and result aligned.
+    st.session_state["ai_site_checker_point"] = (
+        float(st.session_state["ai_manual_lat"]), float(st.session_state["ai_manual_lon"])
+    )
 
 
 def show_nearest_tower_selection(event, candidate_source, key_prefix):
@@ -1686,7 +1683,7 @@ def show_nearest_tower_selection(event, candidate_source, key_prefix):
             "font": {"color": "#334155", "size": 11},
         },
     )
-    st.plotly_chart(detail, width="stretch", key=f"{key_prefix}_nearest_detail", config=MAP_PLOTLY_CONFIG)
+    render_map(detail, width="stretch", key=f"{key_prefix}_nearest_detail", config=MAP_PLOTLY_CONFIG)
 
     if len(cells):
         st.markdown("**Technical cell records at the nearest mapped tower**")
@@ -1817,7 +1814,7 @@ def show_recommendation_selection(event, recs, key_prefix):
                 "font": {"color": "#334155", "size": 11},
             },
         )
-        st.plotly_chart(focus, width="stretch", key=f"{key_prefix}_recommendation_detail", config=MAP_PLOTLY_CONFIG)
+        render_map(focus, width="stretch", key=f"{key_prefix}_recommendation_detail", config=MAP_PLOTLY_CONFIG)
 
         cells = tower_cells_lookup_all[tower_cells_lookup_all.yangon_tower_id == tower_id].copy()
         if len(cells):
@@ -1907,7 +1904,7 @@ def area_summary(df, selected_areas, threshold):
     return pd.DataFrame(rows)
 
 
-def _sos_focus_map(incident: dict):
+def _sos_focus_map(incident: dict, boundary: dict | None = None):
     lat = float(incident["latitude"])
     lon = float(incident["longitude"])
     tower_lat = incident.get("nearest_tower_lat")
@@ -1915,6 +1912,19 @@ def _sos_focus_map(incident: dict):
     tower_km = incident.get("nearest_tower_km")
 
     fig = go.Figure()
+    if boundary and boundary.get("features"):
+        locations = [f["properties"]["adm3_name"] for f in boundary["features"]]
+        fig.add_trace(go.Choroplethmap(
+            geojson=boundary,
+            locations=locations,
+            z=[1] * len(locations),
+            featureidkey="properties.adm3_name",
+            colorscale=[[0, "rgba(20,90,160,0.10)"], [1, "rgba(20,90,160,0.10)"]],
+            marker={"line": {"width": 1.2}},
+            showscale=False,
+            hovertemplate="<b>%{location}</b><extra></extra>",
+            name="Project AOI",
+        ))
     if tower_lat is not None and tower_lon is not None:
         fig.add_trace(
             go.Scattermap(
@@ -1936,9 +1946,10 @@ def _sos_focus_map(incident: dict):
                 customdata=[[incident.get("nearest_tower_township", "—"), incident.get("nearest_tower_networks", "—"), incident.get("nearest_tower_radios", "—")]],
                 hovertemplate=(
                     "<b>%{text}</b><br>Township: %{customdata[0]}"
-                    "<br>Network: %{customdata[1]}<br>Radio: %{customdata[2]}<extra></extra>"
+                    "<br>Network: %{customdata[1]}<br>Radio: %{customdata[2]}"
+                    "<br>%{lat:.6f}, %{lon:.6f}<extra></extra>"
                 ),
-                name="Nearest tower",
+                name="Nearest tower in AOI",
             )
         )
 
@@ -1992,12 +2003,13 @@ def render_sos_emergency_panel():
         st.caption(f"Expected service: {SOS_API_URL}")
         return
 
+    sos_scope = project_sos_scope(admin3_geo, tower_sites_lookup_all)
     latest_id = incidents[0].get("id") if incidents else None
     if not st.session_state.get("sos_monitor_initialized", False):
         st.session_state["sos_monitor_initialized"] = True
         st.session_state["sos_last_seen_id"] = latest_id
     elif latest_id and latest_id != st.session_state.get("sos_last_seen_id"):
-        latest = enrich_sos_incident(incidents[0], admin3_geo, tower_sites_lookup_all)
+        latest = enrich_sos_incident(incidents[0], admin3_geo, tower_sites_lookup_all, scope=sos_scope)
         st.session_state["sos_last_seen_id"] = latest_id
         st.session_state["sos_selected_id"] = latest_id
         st.toast(
@@ -2011,13 +2023,13 @@ def render_sos_emergency_panel():
     c1.metric("SOS feed", "Connected")
     c2.metric("New incidents", new_count)
     c3.metric("Recent incidents", len(incidents))
-    st.caption("The dashboard checks the SOS service every 5 seconds. This is near-real-time polling, not telecom-grade push messaging.")
+    st.caption("Refresh: 5 s · tower search: project AOI")
 
     if not incidents:
         st.info("No SOS incidents have been received yet. Open the resident SOS web app and send a test location.")
         return
 
-    enriched = [enrich_sos_incident(x, admin3_geo, tower_sites_lookup_all) for x in incidents]
+    enriched = [enrich_sos_incident(x, admin3_geo, tower_sites_lookup_all, scope=sos_scope) for x in incidents]
     ids = {x["id"] for x in enriched}
     selected_id = st.session_state.get("sos_selected_id")
     if selected_id not in ids:
@@ -2036,7 +2048,7 @@ def render_sos_emergency_panel():
         if cols[4].button("Locate", key=f"locate_{item['id']}", type="primary" if item["id"] == selected_id else "secondary"):
             st.session_state["sos_selected_id"] = item["id"]
             selected_id = item["id"]
-            st.rerun(scope="fragment")
+            st.rerun()
 
     selected = next(x for x in enriched if x["id"] == selected_id)
     st.divider()
@@ -2049,26 +2061,35 @@ def render_sos_emergency_panel():
     accuracy = selected.get("accuracy_m")
     d3.metric("GPS accuracy", f"±{float(accuracy):.0f} m" if accuracy is not None else "—")
     tower_km = selected.get("nearest_tower_km")
-    d4.metric("Nearest tower", f"{float(tower_km):.2f} km" if tower_km is not None else "—")
+    d4.metric("Nearest tower in AOI", f"{float(tower_km):.2f} km" if tower_km is not None else "—")
 
-    tower_id = selected.get("nearest_tower_id", "—")
-    st.caption(
-        f"Nearest mapped tower: {tower_id} · {selected.get('nearest_tower_networks', '—')} · "
-        f"{selected.get('nearest_tower_radios', '—')} · tower township: {selected.get('nearest_tower_township', '—')}"
-    )
-    st.plotly_chart(_sos_focus_map(selected), width="stretch", config=MAP_PLOTLY_CONFIG, key=f"sos_map_{selected_id}")
+    if selected["tower_match_status"] == "no_tower_data":
+        st.warning("No valid tower coordinates within the project AOI.")
+    else:
+        location_scope = "inside" if selected["inside_project_aoi"] else "outside"
+        tower_scope = "inside" if selected["nearest_tower_inside_project_aoi"] else "outside"
+        st.caption(
+            f"Tower {selected['nearest_tower_id']} · {selected['nearest_tower_networks']} · "
+            f"{selected['nearest_tower_radios']} · {selected['nearest_tower_township']}"
+        )
+        st.caption(
+            f"{selected['nearest_tower_lat']:.6f}, {selected['nearest_tower_lon']:.6f} · "
+            f"SOS {location_scope} AOI · tower {tower_scope} AOI"
+        )
+    st.caption("Tower scope: Yangon City, Hmawbi, Thanlyin and Kyauktan · geographic nearest, not the serving cell.")
+    render_map(_sos_focus_map(selected, sos_scope[0]), width="stretch", config=MAP_PLOTLY_CONFIG, key=f"sos_map_{selected_id}")
 
     a1, a2, _ = st.columns([1, 1, 4])
     if selected.get("status") == "NEW" and a1.button("Acknowledge", key=f"ack_{selected_id}"):
         ok, status_error = update_sos_status(SOS_API_URL, selected_id, "ACKNOWLEDGED", SOS_API_KEY)
         if ok:
-            st.rerun(scope="fragment")
+            st.rerun()
         else:
             st.error(status_error or "Could not update SOS status.")
     if selected.get("status") != "RESOLVED" and a2.button("Mark resolved", key=f"resolve_{selected_id}"):
         ok, status_error = update_sos_status(SOS_API_URL, selected_id, "RESOLVED", SOS_API_KEY)
         if ok:
-            st.rerun(scope="fragment")
+            st.rerun()
         else:
             st.error(status_error or "Could not update SOS status.")
 
@@ -2214,7 +2235,7 @@ with t_overview:
     st.caption("Blue: towers · Orange: coverage gaps · Green: candidate sites")
     if len(towers) > 2500:
         st.caption(f"Map: 2,500 / {len(towers):,} towers · analysis uses all towers")
-    overview_event = st.plotly_chart(
+    overview_event = render_map(
         fig, width="stretch", key="overview_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG,
     )
     with st.container():
@@ -2287,7 +2308,7 @@ with t_population:
                 name="Estimated population near tower",
             )
         )
-        st.plotly_chart(fig, width="stretch", config=MAP_PLOTLY_CONFIG)
+        render_map(fig, width="stretch", config=MAP_PLOTLY_CONFIG)
 
     with c2:
         st.markdown("**Tower sites with the highest estimated nearby population**")
@@ -2315,7 +2336,7 @@ with t_gap:
         fig = base_map(selected_areas, underserved if len(underserved) else candidates, zoom=8.6 if len(selected_areas) > 1 else 9.2)
         gap_source = underserved if len(underserved) else candidates
         add_candidates(fig, gap_source, "Underserved local areas")
-        under_event = st.plotly_chart(fig, width="stretch", key="underserved_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
+        under_event = render_map(fig, width="stretch", key="underserved_gap_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
         under_detail = st.container()
         with under_detail:
             show_nearest_tower_selection(under_event, gap_source, "underserved")
@@ -2353,7 +2374,7 @@ with t_recommend:
     fig = base_map(selected_areas, recs, zoom=8.6 if len(selected_areas) > 1 else 9.2)
     add_towers(fig, towers, max_points=1600)
     add_recommendations(fig, recs)
-    rec_event = st.plotly_chart(fig, width="stretch", key="recommendation_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
+    rec_event = render_map(fig, width="stretch", key="recommendation_map", on_select="rerun", selection_mode="points", config=MAP_PLOTLY_CONFIG)
     rec_detail = st.container()
     with rec_detail:
         if not show_recommendation_selection(rec_event, recs, "recommendation"):
@@ -2434,41 +2455,33 @@ with t_ai:
     previous = st.session_state.get("ai_site_checker_point")
     clicked_point = None
 
-    if HAS_CLICK_MAP:
-        m = build_ai_click_map(selected_areas, previous)
-        click_state = st_folium(
-            m,
-            width=1100,
-            height=560,
-            returned_objects=["last_clicked"],
-            key="xgb_ai_click_map",
-        )
-        if click_state and click_state.get("last_clicked"):
-            raw = click_state["last_clicked"]
-            clicked_point = (float(raw["lat"]), float(raw["lng"]))
+    click_state = render_map(build_ai_click_map(selected_areas, previous),
+                             key="xgb_ai_click_map", pick_location=True)
+    if click_state.get("last_clicked"):
+        raw = click_state["last_clicked"]
+        clicked_point = (float(raw["lat"]), float(raw["lng"]))
+        if clicked_point != previous:
             st.session_state["ai_site_checker_point"] = clicked_point
-        elif previous:
-            clicked_point = previous
-    else:
-        st.warning(
-            "Interactive blank-map click support requires the `streamlit-folium` package. "
-            "The coordinate checker below remains fully functional."
-        )
+            st.session_state["ai_manual_lat"], st.session_state["ai_manual_lon"] = clicked_point
+            # This pass already rendered the previous pin. Rebuild before assessment.
+            st.rerun()
+    elif previous:
+        clicked_point = previous
 
-    with st.expander("Coordinates", expanded=not HAS_CLICK_MAP):
+    with st.expander("Coordinates", expanded=False):
         default_lat = float(clicked_point[0] if clicked_point else 16.86)
         default_lon = float(clicked_point[1] if clicked_point else 96.20)
         x1, x2, x3 = st.columns([1, 1, 0.7])
         with x1:
-            manual_lat = st.number_input("Latitude", value=default_lat, format="%.6f", key="ai_manual_lat")
+            st.session_state.setdefault("ai_manual_lat", default_lat)
+            st.number_input("Latitude", min_value=-90.0, max_value=90.0, format="%.6f", key="ai_manual_lat")
         with x2:
-            manual_lon = st.number_input("Longitude", value=default_lon, format="%.6f", key="ai_manual_lon")
+            st.session_state.setdefault("ai_manual_lon", default_lon)
+            st.number_input("Longitude", min_value=-180.0, max_value=180.0, format="%.6f", key="ai_manual_lon")
         with x3:
             st.write("")
             st.write("")
-            if st.button("Check location", type="primary", key="ai_manual_assess"):
-                clicked_point = (float(manual_lat), float(manual_lon))
-                st.session_state["ai_site_checker_point"] = clicked_point
+            st.button("Check location", type="primary", key="ai_manual_assess", on_click=apply_site_checker_coordinates)
 
     if clicked_point:
         render_ai_assessment(assess_site(clicked_point[0], clicked_point[1]), key_prefix="ai_checker")
@@ -2678,7 +2691,7 @@ with t_rain:
                 name="Tower inside historic flood footprint",
             )
         )
-    st.plotly_chart(fig, width="stretch", config=MAP_PLOTLY_CONFIG)
+    render_map(fig, width="stretch", config=MAP_PLOTLY_CONFIG)
 
 with t_method:
     st.subheader("Data inventory and methodology")

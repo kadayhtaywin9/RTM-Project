@@ -1,8 +1,7 @@
 """Runtime XGBoost site assessment for the Yangon GeoAI dashboard.
 
-The model is a Step-2 hackathon/MVP classifier trained on pseudo-labels generated
-from the previous planning rule. This module keeps runtime feature construction
-consistent with those training features for an arbitrary latitude/longitude.
+The classifier uses planning-rule pseudo-labels. Feature construction matches
+the training inputs for a selected latitude and longitude.
 """
 from __future__ import annotations
 
@@ -184,7 +183,7 @@ def _sample_elevation(lat: float, lon: float) -> float | None:
 
 
 def extract_site_features(lat: float, lon: float) -> dict[str, Any]:
-    """Build the five Step-2 model features for one arbitrary map coordinate."""
+    """Build the five site-model features for a map coordinate."""
     lat = float(lat)
     lon = float(lon)
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -360,7 +359,7 @@ def assess_site(lat: float, lon: float) -> dict[str, Any]:
         "explanations": explanations,
         "model_name": metadata.get("model_name", "GeoVision AI tower-site model"),
         "model_warning": (
-            "Prototype model: trained on pseudo-labels derived from the prior planning rule, not operator-confirmed deployment success."
+            "Trained on planning-rule pseudo-labels; deployment outcomes are unvalidated."
         ),
     })
     return extracted

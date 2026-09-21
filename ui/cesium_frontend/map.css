@@ -1,0 +1,21 @@
+html,body{margin:0;height:100%;overflow:hidden;font:12px system-ui,sans-serif;color:#e2e8f0;background:#0b1727}
+#map{position:absolute;inset:0;border-radius:12px;overflow:hidden}
+#map .cesium-viewer,#map .cesium-viewer-cesiumWidgetContainer,#map .cesium-widget{position:absolute;inset:0;width:100%;height:100%}
+#map .cesium-widget canvas{display:block;width:100%;height:100%;touch-action:none}
+.cesium-viewer-bottom{position:absolute;left:5px;bottom:3px;z-index:1}
+.cesium-credit-lightbox-overlay{position:absolute;inset:0;background:#020617b8;z-index:10}
+.cesium-credit-lightbox{position:absolute;top:12%;left:5%;right:5%;max-height:75%;overflow:auto;background:#10243d;color:#f1f5f9;padding:20px;border-radius:8px}
+.cesium-credit-lightbox-close{position:absolute;top:5px;right:10px;font-size:24px;cursor:pointer}
+.cesium-credit-lightbox a,.cesium-widget-credits a{color:#dbeafe}
+.cesium-credit-expand-link{cursor:pointer;text-decoration:underline}
+#toolbar{position:absolute;top:12px;left:12px;display:flex;gap:5px;z-index:3}
+button{font:inherit;border:1px solid #475569;background:#10243ded;color:#f1f5f9;padding:7px 11px;border-radius:6px;cursor:pointer}
+button:hover{background:#254469}button:disabled{opacity:.45;cursor:default}button:focus-visible{outline:2px solid #38bdf8;outline-offset:2px}
+#status{position:absolute;top:54px;left:12px;max-width:calc(100% - 48px);background:#10243ded;border-radius:5px;padding:6px 9px;pointer-events:none;z-index:3}
+#status:empty{display:none}
+#legend{position:absolute;bottom:34px;left:12px;max-width:calc(100% - 44px);max-height:115px;overflow:auto;display:flex;flex-wrap:wrap;gap:7px;background:#10243de8;padding:7px 9px;border-radius:7px;z-index:2}
+#legend:empty{display:none}.layer{display:flex;align-items:center;gap:5px;white-space:nowrap}.layer input{margin:0;accent-color:#38bdf8}.swatch{height:9px;width:9px;border-radius:50%;display:inline-block}.scale{min-width:110px;display:grid;gap:2px;font-size:10px}.gradient{height:7px;border-radius:3px}.endpoints{display:flex;justify-content:space-between}
+#details{position:absolute;top:54px;right:12px;width:270px;max-width:calc(100% - 24px);box-sizing:border-box;max-height:55%;overflow:auto;padding:14px;background:#10243df5;border:1px solid #475569;border-radius:8px;line-height:1.6;z-index:4;white-space:pre-line;overflow-wrap:break-word}
+#close{float:right;padding:0 5px;margin-left:6px;font-size:18px;border:0}
+.cesium-viewer-bottom{font-size:10px!important}.cesium-widget-credits{display:block!important}
+@media(max-width:600px){#details{left:12px;right:12px;width:auto;max-width:none;max-height:35%}#legend{max-height:90px}}

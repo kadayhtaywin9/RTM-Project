@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.145/Build/Cesium/Widgets/widgets.css">
+  <link rel="stylesheet" href="map.css?v=20260921b">
+  <title>GeoVision map</title>
+</head>
+<body>
+  <div id="map" aria-label="Interactive Cesium map"></div>
+  <nav id="toolbar" aria-label="Map controls">
+    <button id="home" title="Reset map extent">Reset</button>
+    <button id="mode" title="Switch between 2D and 3D">2D</button>
+    <button id="imagery" title="Switch imagery" disabled>Satellite</button>
+    <button id="retry" hidden>Retry</button>
+  </nav>
+  <div id="status" role="status">Loading map…</div>
+  <div id="legend" aria-label="Map layers"></div>
+  <aside id="details" hidden><button id="close" aria-label="Close details">×</button><div id="detailText"></div></aside>
+  <script src="map.js?v=20260921b"></script>
+</body>
+</html>

@@ -20,10 +20,10 @@ RUNTIME_IMPORTS = (
     "shapely",
     "xgboost",
     "sklearn",
-    "folium",
-    "streamlit_folium",
     "ee",
     "google.auth",
+    "fastapi",
+    "uvicorn",
 )
 OPTIONAL_IMPORTS = {"rasterio": "Selected-coordinate GeoTIFF terrain sampling"}
 

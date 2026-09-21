@@ -15,11 +15,7 @@ from .decision_engine import DecisionEngine
 
 
 class HazardEngine:
-    """Coordinate feature preparation, hazard inference, and decisions.
-
-    The established hazard runtime is retained as an adapter during the incremental
-    migration, preserving its tested GEE/USGS/local-fallback behavior.
-    """
+    """Coordinate feature preparation, hazard inference, and planning decisions."""
 
     def __init__(self) -> None:
         self.decisions = DecisionEngine()
